@@ -649,7 +649,7 @@ with st.sidebar:
 # ── Header ────────────────────────────────────────────────────────────────────
 col_title, col_status = st.columns([3, 1])
 with col_title:
-    st.title('🔬 Simulador Micromagnético ML')
+    st.title('🔬 Simulador Micromagnético ML - Opcion Grado')
 with col_status:
     status_text = '🟢 Simulación lista' if st.session_state.sim_done else '⚪ Sin simular'
     st.markdown(f"""
