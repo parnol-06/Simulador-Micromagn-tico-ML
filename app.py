@@ -536,7 +536,7 @@ with st.spinner('⚙️ Entrenando modelos GBR para los 8 materiales…'):
 # ═══════════════════════════════════════════════════════════════════════════════
 with st.sidebar:
     st.markdown('## 🔬 Simulador\nMicromagnético ML')
-    st.caption('v3.1 · 8 Materiales · 8 Geometrías')
+    st.caption('© 2026 SimuGOD. Todos los derechos reservados Jesus Cabezas - Arnol Pérez')
     st.divider()
 
     # ── Material ─────────────────────────────────────────────────────────────
