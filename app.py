@@ -36,7 +36,7 @@ warnings.filterwarnings('ignore')
 #  CONFIGURACIÓN DE PÁGINA
 # ═══════════════════════════════════════════════════════════════════════════════
 st.set_page_config(
-    page_title="Simulador Micromagnético ML",
+    page_title="Simulador Micromagnético ML - Opcion de Grado",
     page_icon="🔬",
     layout="wide",
     initial_sidebar_state="expanded",
