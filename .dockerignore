@@ -1,0 +1,47 @@
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+*.whl
+
+# ── Entornos virtuales ────────────────────────────────────────────────────────
+venv/
+.venv/
+env/
+.env/
+
+# ── Outputs generados (se monta como volumen) ─────────────────────────────────
+outputs/
+
+# ── Documentos (no necesarios en la imagen) ──────────────────────────────────
+docs/
+
+# ── Control de versiones ──────────────────────────────────────────────────────
+.git/
+.gitignore
+.gitattributes
+
+# ── IDE / OS ──────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# ── Tests ─────────────────────────────────────────────────────────────────────
+tests/
+*.test.py
+pytest.ini
+.pytest_cache/
+
+# ── Archivos temporales ───────────────────────────────────────────────────────
+*.log
+*.tmp
+*.bak
