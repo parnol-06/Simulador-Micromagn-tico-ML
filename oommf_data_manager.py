@@ -176,12 +176,18 @@ def extract_hyst_params(data: dict) -> dict:
     -------
     dict con Hc_mT, Hc_desc_mT, Hc_asc_mT, Mr_Ms, H_max_mT
     """
-    fd_d = data['fd_desc']
-    mg_d = data['mg_desc']
-    fd_a = data['fd_asc']
-    mg_a = data['mg_asc']
+    fd_d = np.asarray(data.get('fd_desc', []), dtype=float)
+    mg_d = np.asarray(data.get('mg_desc', []), dtype=float)
+    fd_a = np.asarray(data.get('fd_asc',  []), dtype=float)
+    mg_a = np.asarray(data.get('mg_asc',  []), dtype=float)
 
-    H_max = float(np.abs(data['fd']).max())
+    # Datos mínimos requeridos
+    if len(fd_d) < 2 or len(fd_a) < 2:
+        return {'Hc_mT': 0.0, 'Hc_desc_mT': 0.0,
+                'Hc_asc_mT': 0.0, 'Mr_Ms': 0.0, 'H_max_mT': 0.0}
+
+    fd_all = np.asarray(data.get('fd', []), dtype=float)
+    H_max  = float(np.abs(fd_all).max()) if len(fd_all) else 0.0
 
     # Hc: interpolación lineal en el cruce por cero
     def _hc(fd_arr, mg_arr, sign=1) -> float:
@@ -369,25 +375,32 @@ def scan_datasets(data_dir: str | None = None) -> dict:
     if not data_dir.exists():
         return result
 
-    # Archivos .txt
+    # Archivos .txt — cada archivo en su propio try para aislar errores
     for fpath in sorted(data_dir.glob('*.txt')):
         result['all_files'].append(str(fpath))
-        ds = parse_fdmg_file(fpath)
-        if not ds:
+        try:
+            ds = parse_fdmg_file(fpath)
+            if not ds:
+                continue
+            if ds['dtype'] == 'hysteresis':
+                hp = extract_hyst_params(ds)
+                ds.update(hp)
+                result['hysteresis'].append(ds)
+            elif ds['dtype'] != 'unknown':
+                result['energies'].append(ds)
+        except Exception:
+            # Archivo malformado: lo registramos pero no detenemos el escaneo
             continue
-        if ds['dtype'] == 'hysteresis':
-            hp = extract_hyst_params(ds)
-            ds.update(hp)
-            result['hysteresis'].append(ds)
-        elif ds['dtype'] != 'unknown':
-            result['energies'].append(ds)
 
-    # Archivos .ipynb
+    # Archivos .ipynb — ídem
     for fpath in sorted(data_dir.glob('*.ipynb')):
         result['all_files'].append(str(fpath))
-        nb_params = parse_ipynb_params(fpath)
-        if nb_params:
-            result['notebooks'].append(nb_params)
+        try:
+            nb_params = parse_ipynb_params(fpath)
+            if nb_params:
+                result['notebooks'].append(nb_params)
+        except Exception:
+            continue
 
     return result
 

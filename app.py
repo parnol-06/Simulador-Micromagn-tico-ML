@@ -13,8 +13,18 @@
 =============================================================================
 """
 
-import io, json, time, warnings, os
+import io, json, time, warnings, os, sys
 from datetime import datetime
+
+import plotly.graph_objects as go
+import plotly.express as px
+
+# ── Asegurar que el directorio de la app está en sys.path ────────────────────
+# Necesario cuando Streamlit ejecuta desde un directorio de trabajo diferente
+# (p.ej. /app/ en contenedores, o rutas relativas en Windows).
+_APP_DIR = os.path.dirname(os.path.abspath(__file__))
+if _APP_DIR not in sys.path:
+    sys.path.insert(0, _APP_DIR)
 
 import matplotlib
 matplotlib.use('Agg')
@@ -32,8 +42,6 @@ from ml_engine import MicromagneticMLEngine
 
 # Datos reales de simulación OOMMF (2 esferas Fe, 12nm.ipynb)
 try:
-    import sys as _sys
-    _sys.path.insert(0, os.path.dirname(__file__))
     import oommf_reference_data as _ref_data
     _REAL_DATA_OK = _ref_data.data_available()
 except Exception:
@@ -290,24 +298,27 @@ def predict_raw(d_nm: float, mat_id: str, geom_key: str,
 
 
 def predict_geom(d_nm: float, mat_id: str, geom_id: str,
-                 engine: MicromagneticMLEngine):
+                 engine: MicromagneticMLEngine, T: float = 300.0):
     """Predicción ensemble con factor de forma aplicado (sin incertidumbre)."""
     gm = GEOMETRY_MODES[geom_id]
     return engine.predict_fast(
         d_nm, mat_id,
         geom_factor_hc=gm['factor_hc'],
         geom_factor_mr=gm['factor_mr'],
+        T=T,
     )
 
 
 def predict_geom_with_uncertainty(d_nm: float, mat_id: str, geom_id: str,
-                                   engine: MicromagneticMLEngine):
+                                   engine: MicromagneticMLEngine,
+                                   T: float = 300.0):
     """Predicción ensemble + incertidumbre ±1σ.  Returns (Hc, Mr, σHc, σMr)."""
     gm = GEOMETRY_MODES[geom_id]
     return engine.predict(
         d_nm, mat_id,
         geom_factor_hc=gm['factor_hc'],
         geom_factor_mr=gm['factor_mr'],
+        T=T,
     )
 
 
@@ -319,16 +330,29 @@ def is_extrapolation(d_nm: float, mat_id: str) -> bool:
 #  SIMULACIÓN LLG + ENERGÍA
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def llg_hysteresis(Hc_mT, Mr, H_max=600, n_pts=500,
+def llg_hysteresis(Hc_mT, Mr, H_max=600, n_pts=800,
                    noise_level=0.008, seed=42):
+    """Genera curva de histéresis LLG con suavizado Savitzky-Golay."""
     if seed is not None:
         np.random.seed(seed)
     H    = np.linspace(-H_max, H_max, n_pts)
     Hc   = max(Hc_mT, 0.5)
-    M_up = np.clip(Mr * np.tanh((H + Hc) / Hc)
-                   + np.random.normal(0, noise_level, n_pts), -1.05, 1.05)
-    M_dn = np.clip(Mr * np.tanh((H - Hc) / Hc)
-                   + np.random.normal(0, noise_level, n_pts), -1.05, 1.05)
+    # Curva analítica base
+    M_up_base = Mr * np.tanh((H + Hc) / Hc)
+    M_dn_base = Mr * np.tanh((H - Hc) / Hc)
+    # Ruido físico realista (escala con pendiente local)
+    rng = np.random.default_rng(seed)
+    noise_scale = noise_level * (1 + 0.5 * np.abs(np.gradient(M_up_base, H)))
+    M_up = np.clip(M_up_base + rng.normal(0, 1, n_pts) * noise_scale, -1.05, 1.05)
+    M_dn = np.clip(M_dn_base + rng.normal(0, 1, n_pts) * noise_scale, -1.05, 1.05)
+    # Suavizado Savitzky-Golay para curvas sin artefactos
+    try:
+        from scipy.signal import savgol_filter
+        win = min(21, n_pts // 20 | 1)   # ventana impar, máx 21
+        M_up = savgol_filter(M_up, win, 3)
+        M_dn = savgol_filter(M_dn, win, 3)
+    except ImportError:
+        pass
     return H, M_up, M_dn
 
 
@@ -420,12 +444,104 @@ def _oommf_sw_fallback(
 #  TEMA OSCURO MATPLOTLIB
 # ═══════════════════════════════════════════════════════════════════════════════
 _DARK = {
-    'figure.facecolor':'#0f172a','axes.facecolor':'#1e293b',
-    'text.color':'#f1f5f9','axes.labelcolor':'#f1f5f9',
-    'xtick.color':'#94a3b8','ytick.color':'#94a3b8',
-    'axes.edgecolor':'#334155','grid.color':'#334155',
-    'grid.alpha':0.35,'font.size':9,
+    # Fondos
+    'figure.facecolor': '#0a0f1e',
+    'axes.facecolor':   '#0d1425',
+    # Texto y etiquetas
+    'text.color':       '#e2e8f0',
+    'axes.labelcolor':  '#cbd5e1',
+    'axes.titlecolor':  '#f1f5f9',
+    'axes.labelsize':   10,
+    'axes.titlesize':   10,
+    'axes.titlepad':    8,
+    # Ticks
+    'xtick.color':      '#94a3b8',
+    'ytick.color':      '#94a3b8',
+    'xtick.labelsize':  8.5,
+    'ytick.labelsize':  8.5,
+    'xtick.major.size': 4,
+    'ytick.major.size': 4,
+    'xtick.direction':  'in',
+    'ytick.direction':  'in',
+    # Bordes y grilla
+    'axes.edgecolor':   '#1e3a5f',
+    'axes.linewidth':   0.8,
+    'grid.color':       '#1e3a5f',
+    'grid.alpha':       0.5,
+    'grid.linestyle':   '--',
+    'grid.linewidth':   0.5,
+    # Fuente
+    'font.family':      'sans-serif',
+    'font.size':        9,
+    # Leyenda
+    'legend.framealpha':    0.85,
+    'legend.facecolor':     '#0d1425',
+    'legend.edgecolor':     '#1e3a5f',
+    'legend.fontsize':      8,
+    # Líneas
+    'lines.linewidth':  2.0,
+    'lines.antialiased': True,
 }
+
+# ── Paleta de colores de gráficas (inspirada en Origin Scientific) ────────────
+_PALETTE = {
+    'primary':   '#4fc3f7',   # azul cielo — curva principal
+    'secondary': '#f48fb1',   # rosa — curva secundaria / comparación
+    'accent1':   '#81c784',   # verde — anisotropía / Mr
+    'accent2':   '#ffb74d',   # naranja — Zeeman / Hc
+    'accent3':   '#ce93d8',   # violeta — exchange
+    'accent4':   '#4db6ac',   # teal — dipolar
+    'zero':      '#334155',   # línea de referencia H=0, M=0
+    'band':      '#4fc3f7',   # relleno de banda de incertidumbre
+}
+
+# ── Tema Plotly global (aplicar a todos los go.Figure) ───────────────────────
+_PLOTLY_LAYOUT = dict(
+    paper_bgcolor='#0a0f1e',
+    plot_bgcolor='#0d1425',
+    font=dict(family='Inter, system-ui, sans-serif', color='#e2e8f0', size=11),
+    title_font=dict(size=13, color='#f1f5f9'),
+    legend=dict(
+        bgcolor='rgba(13,20,37,0.85)',
+        bordercolor='#1e3a5f',
+        borderwidth=1,
+        font=dict(size=10),
+    ),
+    xaxis=dict(
+        gridcolor='#1e3a5f', gridwidth=0.5,
+        zerolinecolor='#334155', zerolinewidth=1,
+        linecolor='#1e3a5f', linewidth=0.8,
+        tickfont=dict(size=9.5),
+        ticks='inside', ticklen=4,
+    ),
+    yaxis=dict(
+        gridcolor='#1e3a5f', gridwidth=0.5,
+        zerolinecolor='#334155', zerolinewidth=1,
+        linecolor='#1e3a5f', linewidth=0.8,
+        tickfont=dict(size=9.5),
+        ticks='inside', ticklen=4,
+    ),
+    margin=dict(l=55, r=20, t=45, b=45),
+    hoverlabel=dict(
+        bgcolor='#1e293b',
+        bordercolor='#4fc3f7',
+        font_size=11,
+    ),
+)
+
+
+def _apply_plotly_theme(fig: go.Figure, title: str = '',
+                         xaxis_title: str = '', yaxis_title: str = '') -> go.Figure:
+    """Aplica el tema global a cualquier go.Figure y ajusta títulos de ejes."""
+    layout = dict(_PLOTLY_LAYOUT)
+    if title:
+        layout['title'] = dict(text=title, x=0.5, xanchor='center', font_size=13)
+    if xaxis_title:
+        layout.setdefault('xaxis', {})['title'] = xaxis_title
+    if yaxis_title:
+        layout.setdefault('yaxis', {})['title'] = yaxis_title
+    fig.update_layout(**layout)
+    return fig
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  FIGURA PRINCIPAL  GridSpec 2×2
@@ -433,17 +549,19 @@ _DARK = {
 
 def build_main_figure(mat_id, d_nm, geom_id, models,
                       noise_level=0.008, dpi=150,
-                      compare_mat=None, compare_geom=None):
+                      compare_mat=None, compare_geom=None,
+                      T: float = 300.0):
     mat   = MATERIALS_DB[mat_id]
     gm    = GEOMETRY_MODES[geom_id]
     H_max = mat['field_max']
-    Hc, Mr = predict_geom(d_nm, mat_id, geom_id, models)
+    Hc, Mr, sHc, sMr = predict_geom_with_uncertainty(
+        d_nm, mat_id, geom_id, models, T=T)
 
     plt.rcParams.update(_DARK)
-    fig = plt.figure(figsize=(14, 7), facecolor='#0f172a', dpi=dpi)
+    fig = plt.figure(figsize=(14, 7.5), facecolor=_DARK['figure.facecolor'], dpi=dpi)
     gs  = GridSpec(2, 2, figure=fig,
-                   hspace=0.50, wspace=0.36,
-                   left=0.07, right=0.97, top=0.91, bottom=0.08)
+                   hspace=0.52, wspace=0.34,
+                   left=0.07, right=0.97, top=0.92, bottom=0.08)
     ax_hyst  = fig.add_subplot(gs[0, 0])
     ax_enrg  = fig.add_subplot(gs[0, 1])
     ax_table = fig.add_subplot(gs[1, :])
@@ -451,74 +569,215 @@ def build_main_figure(mat_id, d_nm, geom_id, models,
     # ── Histéresis ──────────────────────────────────────────────────────────
     H, M_up, M_dn = llg_hysteresis(Hc, Mr, H_max=H_max,
                                     noise_level=noise_level, seed=42)
-    ax_hyst.plot(H, M_up, color='#38bdf8', lw=1.8,
-                 label=f'{gm["name"]} ↑  Hc={Hc:.0f} mT')
-    ax_hyst.plot(H, M_dn, color='#38bdf8', lw=1.5, ls='--', alpha=0.70)
+    # Banda de incertidumbre ±σ (semitransparente)
+    _, M_up_hi, _ = llg_hysteresis(Hc + sHc, min(Mr + sMr, 1.0),
+                                    H_max=H_max, noise_level=0, seed=42)
+    _, M_up_lo, _ = llg_hysteresis(max(Hc - sHc, 0.5), max(Mr - sMr, 0.05),
+                                    H_max=H_max, noise_level=0, seed=42)
+
+    ax_hyst.fill_between(H, M_up_lo, M_up_hi,
+                         color=_PALETTE['band'], alpha=0.12, lw=0,
+                         label=f'±1σ  (Hc={sHc:.0f} mT)')
+    ax_hyst.plot(H, M_up, color=_PALETTE['primary'], lw=2.2,
+                 label=f'{gm["name"]} ↑   Hc = {Hc:.0f} mT')
+    ax_hyst.plot(H, M_dn, color=_PALETTE['primary'], lw=2.2,
+                 ls='--', alpha=0.65, label=f'↓   Mr = {Mr:.3f}')
 
     if compare_mat and compare_geom:
-        c_mat   = MATERIALS_DB[compare_mat]
+        c_mat      = MATERIALS_DB[compare_mat]
         c_lo, c_hi = c_mat['range']
-        d_c     = min(max(d_nm, c_lo), c_hi)
-        Hc2, Mr2 = predict_geom(d_c, compare_mat, compare_geom, models)
-        c_H_max = c_mat['field_max']
+        d_c        = min(max(d_nm, c_lo), c_hi)
+        Hc2, Mr2   = predict_geom(d_c, compare_mat, compare_geom, models)
+        c_H_max    = c_mat['field_max']
         H2, M_up2, M_dn2 = llg_hysteresis(Hc2, Mr2, H_max=c_H_max,
                                             noise_level=noise_level, seed=42)
         ax_hyst.plot(H2 / c_H_max * H_max, M_up2,
-                     color=c_mat['color'], lw=1.4, ls=':',
-                     label=f'{c_mat["name"][:12]} {GEOMETRY_MODES[compare_geom]["name"]}')
+                     color=c_mat['color'], lw=1.8, ls=':',
+                     label=f'{c_mat["name"][:12]} / {GEOMETRY_MODES[compare_geom]["name"]}')
 
-    ax_hyst.axhline(0, color='#475569', lw=0.5)
-    ax_hyst.axvline(0, color='#475569', lw=0.5)
-    ax_hyst.set_xlabel('Campo H (mT)'); ax_hyst.set_ylabel('M / Ms')
+    ax_hyst.axhline(0, color=_PALETTE['zero'], lw=0.8)
+    ax_hyst.axvline(0, color=_PALETTE['zero'], lw=0.8)
+    # Marcadores de Hc y Mr
+    ax_hyst.scatter([ Hc, -Hc], [0, 0], s=30, color=_PALETTE['accent2'],
+                    zorder=5, marker='|', linewidths=2)
+    ax_hyst.scatter([0, 0], [Mr, -Mr], s=30, color=_PALETTE['accent1'],
+                    zorder=5, marker='_', linewidths=2)
+    ax_hyst.set_xlabel('Campo aplicado  H  (mT)')
+    ax_hyst.set_ylabel('Magnetización reducida  M / Ms')
     ax_hyst.set_title(
-        f'Histéresis — {mat["name"]}  ·  {gm["emoji"]} {gm["name"]}  @  {d_nm:.0f} nm',
-        fontsize=9, pad=6)
-    ax_hyst.legend(fontsize=7, loc='lower right')
+        f'{mat["name"]}  ·  {gm["emoji"]} {gm["name"]}  ·  {d_nm:.0f} nm  ·  {T:.0f} K',
+        fontweight='semibold')
+    ax_hyst.legend(loc='lower right', framealpha=0.85)
     ax_hyst.grid(True)
 
     # ── Paisaje de energía ─────────────────────────────────────────────────
     en = energy_landscape(Hc, H_max=H_max)
     en_styles = [
-        ('zeeman',   '#38bdf8', '-',  'Zeeman'),
-        ('exchange', '#f472b6', '-',  'Intercambio'),
-        ('demag',    '#fbbf24', '--', 'Desmagnetización'),
-        ('aniso',    '#34d399', '-.', 'Anisotropía'),
+        ('zeeman',   _PALETTE['accent2'],  '-',   'Zeeman'),
+        ('exchange', _PALETTE['accent3'],  '-',   'Intercambio'),
+        ('demag',    _PALETTE['accent4'],  '--',  'Desmagnetización'),
+        ('aniso',    _PALETTE['accent1'],  '-.',  'Anisotropía'),
     ]
     for key, col, ls, lbl in en_styles:
-        ax_enrg.plot(en['H'], en[key], color=col, lw=1.5, ls=ls, label=lbl)
-    ax_enrg.set_xlabel('H (mT)'); ax_enrg.set_ylabel('E / E₀  (u.a.)')
-    ax_enrg.set_title('Paisaje de Energía', fontsize=9, pad=6)
-    ax_enrg.legend(fontsize=7); ax_enrg.grid(True)
+        ax_enrg.plot(en['H'], en[key], color=col, lw=2.0, ls=ls, label=lbl)
+    ax_enrg.axhline(0, color=_PALETTE['zero'], lw=0.8)
+    ax_enrg.set_xlabel('Campo aplicado  H  (mT)')
+    ax_enrg.set_ylabel('E / E₀  (u.a.)')
+    ax_enrg.set_title('Paisaje de Energía Magnética', fontweight='semibold')
+    ax_enrg.legend(loc='upper right', framealpha=0.85)
+    ax_enrg.grid(True)
 
     # ── Tabla comparativa geometrías ────────────────────────────────────────
     ax_table.axis('off')
     p   = mat['params']
-    ext = '  ⚠' if is_extrapolation(d_nm, mat_id) else ''
-    headers = ['Geometría', 'Hc (mT)', 'Mr/Ms', 'f_Hc', 'f_Mr',
-               'K₁ (kJ/m³)', 'A (pJ/m)', 'Ms (MA/m)', 'α', 'Tc (K)']
+    ext = ' ⚠' if is_extrapolation(d_nm, mat_id) else ''
+    headers = ['Geometría', 'Hc (mT)', '±σHc', 'Mr/Ms', '±σMr',
+               'f_Hc', 'f_Mr', 'K₁ (kJ/m³)', 'A (pJ/m)', 'Ms (MA/m)']
     rows = []
     for gid, gdata in GEOMETRY_MODES.items():
-        Hc_g, Mr_g = predict_geom(d_nm, mat_id, gid, models)
+        Hc_g, Mr_g, sHc_g, sMr_g = predict_geom_with_uncertainty(
+            d_nm, mat_id, gid, models, T=T)
+        is_sel = (gid == geom_id)
+        _sel_prefix = '* ' if is_sel else ''
+        _sel_suffix = ext  if is_sel else ''
         rows.append([
-            f'{gdata["emoji"]} {gdata["name"]}' + (ext if gid == geom_id else ''),
-            f'{Hc_g:.1f}', f'{Mr_g:.3f}',
+            f'{_sel_prefix}{gdata["emoji"]} {gdata["name"]}{_sel_suffix}',
+            f'{Hc_g:.1f}',  f'±{sHc_g:.1f}',
+            f'{Mr_g:.3f}',  f'±{sMr_g:.3f}',
             f'{gdata["factor_hc"]:.2f}', f'{gdata["factor_mr"]:.2f}',
-            p['K1_kJ_m3'], p['A_pJ_m'], p['Ms_MA_m'], p['alpha'], p['Tc_K'],
+            f'{p["K1_kJ_m3"]:.1f}', f'{p["A_pJ_m"]:.2f}', f'{p["Ms_MA_m"]:.3f}',
         ])
     tbl = ax_table.table(cellText=rows, colLabels=headers,
                           loc='center', cellLoc='center')
-    tbl.auto_set_font_size(False); tbl.set_fontsize(7.5); tbl.scale(1, 1.55)
+    tbl.auto_set_font_size(False)
+    tbl.set_fontsize(8)
+    tbl.scale(1, 1.65)
     for (row, col), cell in tbl.get_celld().items():
-        cell.set_facecolor('#1e293b' if row % 2 == 0 else '#0f172a')
-        cell.set_edgecolor('#334155')
-        cell.set_text_props(color='#f1f5f9')
+        is_header = (row == 0)
+        is_selected = (row > 0 and rows[row - 1][0].startswith('★'))
+        if is_header:
+            cell.set_facecolor('#0f2744')
+            cell.set_text_props(color='#93c5fd', fontweight='bold')
+        elif is_selected:
+            cell.set_facecolor('#0c2a1a')
+            cell.set_text_props(color='#86efac')
+        elif row % 2 == 0:
+            cell.set_facecolor('#0d1425')
+            cell.set_text_props(color='#cbd5e1')
+        else:
+            cell.set_facecolor('#111827')
+            cell.set_text_props(color='#94a3b8')
+        cell.set_edgecolor('#1e3a5f')
+        cell.set_linewidth(0.5)
     ax_table.set_title(
-        f'Comparativa de Geometrías  @  {d_nm:.0f} nm  |  {mat["name"]}',
-        fontsize=9, color='#f1f5f9', pad=5)
+        f'Comparativa de Geometrías  ·  {d_nm:.0f} nm  ·  {mat["name"]}  ·  T = {T:.0f} K',
+        fontsize=9.5, color='#cbd5e1', pad=6, fontweight='semibold')
 
-    fig.suptitle('Simulador Micromagnético ML  v3.1  —  Fase 3',
-                 fontsize=11, color='#64748b', y=0.975)
+    fig.suptitle(
+        'Simulador Micromagnético ML  ·  Ensemble RF + GBR',
+        fontsize=10.5, color='#64748b', y=0.978,
+        fontweight='normal', fontstyle='italic')
     return fig, Hc, Mr
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  EXPORTADOR ORIGINLAB
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def export_to_originlab(mat_id: str, d_nm: float, geom_id: str,
+                         Hc: float, Mr: float, T: float,
+                         models) -> bytes:
+    """
+    Genera un archivo .txt con formato nativo de OriginLab (tab-delimited,
+    cabeceras Long Name / Units / Comments en filas 1-3).
+
+    Compatible con File → Import → ASCII en Origin 8+.
+    El usuario puede abrirlo directamente y generar gráficas de publicación.
+
+    Formato de bloque:
+        Fila 1  → Long Name   (nombre de columna legible)
+        Fila 2  → Units       (unidades físicas)
+        Fila 3  → Comments    (metadatos de la simulación)
+        Fila 4… → datos numéricos tab-separados
+
+    Returns
+    -------
+    bytes — contenido del archivo listo para st.download_button
+    """
+    mat = MATERIALS_DB[mat_id]
+    gm  = GEOMETRY_MODES[geom_id]
+    H_max = mat['field_max']
+
+    # ── Curva de histéresis ──────────────────────────────────────────────────
+    H, M_up, M_dn = llg_hysteresis(Hc, Mr, H_max=H_max, noise_level=0, seed=42)
+
+    # ── Paisaje de energía ───────────────────────────────────────────────────
+    en = energy_landscape(Hc, H_max=H_max)
+
+    # ── Todas las geometrías (tabla comparativa) ─────────────────────────────
+    geom_rows = []
+    for gid, gdata in GEOMETRY_MODES.items():
+        hc_g, mr_g, shc_g, smr_g = predict_geom_with_uncertainty(
+            d_nm, mat_id, gid, models, T=T)
+        geom_rows.append((gdata['name'], hc_g, shc_g, mr_g, smr_g,
+                          gdata['factor_hc'], gdata['factor_mr']))
+
+    meta = (f"Material={mat['name']}; Diameter={d_nm:.1f}nm; "
+            f"Geometry={gm['name']}; T={T:.0f}K; "
+            f"Hc={Hc:.2f}mT; Mr={Mr:.4f}; "
+            f"K1={mat['params']['K1_kJ_m3']}kJ/m3; "
+            f"A={mat['params']['A_pJ_m']}pJ/m; "
+            f"Ms={mat['params']['Ms_MA_m']}MA/m")
+
+    lines: list[str] = []
+
+    # ─ Bloque 1: Histéresis ──────────────────────────────────────────────────
+    lines += [
+        '! OriginLab import file — Simulador Micromagnético ML',
+        f'! Generated: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}',
+        f'! {meta}',
+        '',
+        '[Hysteresis Loop]',
+        # Long Name  (fila 1)
+        'H_applied\tM_Ms_ascending\tM_Ms_descending',
+        # Units (fila 2)
+        'mT\t\t',
+        # Comments (fila 3)
+        f'{meta}\t\t',
+    ]
+    for i in range(len(H)):
+        lines.append(f'{H[i]:.4f}\t{M_up[i]:.6f}\t{M_dn[i]:.6f}')
+
+    # ─ Bloque 2: Paisaje de energía ─────────────────────────────────────────
+    lines += [
+        '',
+        '[Energy Landscape]',
+        'H_applied\tE_Zeeman\tE_Exchange\tE_Demag\tE_Anisotropy',
+        'mT\tu.a.\tu.a.\tu.a.\tu.a.',
+        f'{meta}\t\t\t\t',
+    ]
+    H_en = en['H']
+    for i in range(len(H_en)):
+        lines.append(
+            f'{H_en[i]:.4f}\t{en["zeeman"][i]:.6f}\t'
+            f'{en["exchange"][i]:.6f}\t{en["demag"][i]:.6f}\t'
+            f'{en["aniso"][i]:.6f}')
+
+    # ─ Bloque 3: Tabla de geometrías ─────────────────────────────────────────
+    lines += [
+        '',
+        '[Geometry Comparison]',
+        'Geometry\tHc_mT\tsigma_Hc_mT\tMr_Ms\tsigma_Mr\tf_Hc\tf_Mr',
+        '\tmT\tmT\t\t\t\t',
+        f'd={d_nm:.1f}nm; T={T:.0f}K; Material={mat["name"]}\t\t\t\t\t\t',
+    ]
+    for row in geom_rows:
+        lines.append(
+            f'{row[0]}\t{row[1]:.2f}\t{row[2]:.2f}\t'
+            f'{row[3]:.4f}\t{row[4]:.4f}\t{row[5]:.3f}\t{row[6]:.3f}')
+
+    return '\n'.join(lines).encode('utf-8')
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  SESSION STATE
@@ -633,6 +892,97 @@ with st.sidebar:
 
     st.divider()
 
+    # ── 🌡 Temperatura de simulación ──────────────────────────────────────────
+    st.markdown('### 🌡 Temperatura')
+    _Tc_mat  = mat['params']['Tc_K']
+    _T_max   = int(min(_Tc_mat - 1, 1400))
+
+    # ── Toggle K / °C ─────────────────────────────────────────────────────────
+    if 'T_unit_celsius' not in st.session_state:
+        st.session_state['T_unit_celsius'] = False
+
+    _unit_is_C = st.session_state['T_unit_celsius']
+
+    # Rangos en ambas unidades (definidos antes del botón para usarlos al togglear)
+    _K_min, _K_max   = 1, _T_max
+    _C_min, _C_max   = _K_min - 273, _K_max - 273   # -272 °C … Tc-273 °C
+
+    _btn_label = '🌡 Ver en Kelvin (K)' if _unit_is_C else '🌡 Ver en Celsius (°C)'
+    if st.button(_btn_label, use_container_width=True, key='btn_toggle_tunit'):
+        _cur_K = int(np.clip(st.session_state.get('T_sim', 300), _K_min, _K_max))
+        if not _unit_is_C:
+            # K → °C: sincronizar la key del slider °C antes del rerun
+            st.session_state['sb_Tsim_C'] = int(np.clip(_cur_K - 273, _C_min, _C_max))
+        else:
+            # °C → K: sincronizar la key del slider K antes del rerun
+            st.session_state['sb_Tsim'] = _cur_K
+        st.session_state['T_unit_celsius'] = not _unit_is_C
+        st.rerun()
+
+    # ── Slider dinámico (la key pre-seteada arriba garantiza valor correcto) ──
+    _T_cur_K = int(np.clip(st.session_state.get('T_sim', 300), _K_min, _K_max))
+
+    if st.session_state['T_unit_celsius']:
+        _c_init  = int(np.clip(_T_cur_K - 273, _C_min, _C_max))
+        # Asegurar que la key existe y está en rango antes de renderizar
+        if 'sb_Tsim_C' not in st.session_state:
+            st.session_state['sb_Tsim_C'] = _c_init
+        _T_C_raw = st.slider(
+            'T de simulación (°C)',
+            min_value=_C_min, max_value=_C_max,
+            value=st.session_state['sb_Tsim_C'],
+            step=10, key='sb_Tsim_C',
+        )
+        T_sim = int(np.clip(_T_C_raw + 273, _K_min, _K_max))
+    else:
+        if 'sb_Tsim' not in st.session_state:
+            st.session_state['sb_Tsim'] = _T_cur_K
+        T_sim = st.slider(
+            'T de simulación (K)',
+            min_value=_K_min, max_value=_K_max,
+            value=st.session_state['sb_Tsim'],
+            step=10, key='sb_Tsim',
+        )
+
+    st.session_state['T_sim'] = T_sim
+
+    # ── Resumen dual siempre visible ──────────────────────────────────────────
+    _T_C   = T_sim - 273.15
+    _T_red = T_sim / _Tc_mat
+    _Tc_C  = _Tc_mat - 273.15
+
+    if st.session_state['T_unit_celsius']:
+        st.caption(f'**{_T_C:.0f} °C**  ·  {T_sim} K · T/Tc = {_T_red:.3f}')
+        st.caption(f'Tc ({mat["name"]}) = **{_Tc_C:.0f} °C** / {_Tc_mat} K')
+    else:
+        st.caption(f'**{T_sim} K**  ·  {_T_C:.0f} °C · T/Tc = {_T_red:.3f}')
+        st.caption(f'Tc ({mat["name"]}) = **{_Tc_mat} K** / {_Tc_C:.0f} °C')
+
+    if _T_red > 0.80:
+        st.warning('⚠️ T > 0.8·Tc — propiedades muy reducidas')
+    elif _T_red > 0.50:
+        st.info('ℹ️ T > 0.5·Tc — efectos térmicos significativos')
+
+    with st.expander('📉 Propiedades efectivas a T'):
+        _tau  = float(np.clip(T_sim / _Tc_mat, 0.0, 0.9999))
+        _ms_t = float(np.clip((1 - _tau**1.5)**(1/3), 0.0, 1.0))
+        _k1_t = float(np.clip(_ms_t**(10/3), 0.0, 1.0))
+        _a_t  = float(np.clip(_ms_t**2, 0.0, 1.0))
+        _p    = mat['params']
+        _T_label = f'{_T_C:.0f} °C' if st.session_state['T_unit_celsius'] else f'{T_sim} K'
+        st.markdown(f"""
+| Propiedad | T=0 K | T={_T_label} |
+|---|---|---|
+| Ms (MA/m) | {_p['Ms_MA_m']:.3f} | {_p['Ms_MA_m']*_ms_t:.3f} |
+| K₁ (kJ/m³)| {_p['K1_kJ_m3']:.1f} | {_p['K1_kJ_m3']*_k1_t:.1f} |
+| A (pJ/m)  | {_p['A_pJ_m']:.2f}  | {_p['A_pJ_m']*_a_t:.2f}  |
+| Ms(T)/Ms₀ | 1.000 | {_ms_t:.4f} |
+| K₁(T)/K₁₀| 1.000 | {_k1_t:.4f} |
+""")
+        st.caption('Bloch (1930) · Callen-Callen (1966) · Anderson scaling')
+
+    st.divider()
+
     # ── Config avanzada ──────────────────────────────────────────────────────
     with st.expander('⚙️ Config. avanzada'):
         noise_level = st.slider('Ruido LLG', 0.0, 0.05, 0.008, 0.001,
@@ -658,39 +1008,51 @@ with st.sidebar:
     st.markdown('### 📂 Datos OOMMF')
 
     # Resumen del dataset actual
+    # _APP_DIR ya está en sys.path (inyectado al inicio), import siempre funciona
+    import oommf_data_manager as _odm_sb
+
+    _sb_data_dir = _odm_sb._DEFAULT_DATA_DIR   # ruta canónica oommf_data/
+    _sb_n_h = _sb_n_e = _sb_n_nb = _sb_n_cal = 0
+    _sb_summary_err = ''
+
     try:
-        import oommf_data_manager as _odm_sb
-        _sb_sum = _odm_sb.dataset_summary()
+        _sb_sum  = _odm_sb.dataset_summary(_sb_data_dir)
         _sb_n_h  = _sb_sum.get('n_hysteresis', 0)
         _sb_n_e  = _sb_sum.get('n_energies', 0)
         _sb_n_nb = _sb_sum.get('n_notebooks', 0)
         _sb_n_cal= _sb_sum.get('n_calibration', 0)
-        _sb_data_dir = _sb_sum.get('data_dir', '')
+    except Exception as _e_sum:
+        _sb_summary_err = str(_e_sum)
 
-        # Badge de estado
-        if _sb_n_h > 0 or _sb_n_e > 0:
-            st.markdown(
-                f'<div style="background:#134e4a;border:1px solid #14b8a6;'
-                f'border-radius:8px;padding:8px 10px;font-size:0.78rem;color:#ccfbf1;">'
-                f'✅ <b>{_sb_n_h}</b> histéresis &nbsp;·&nbsp; '
-                f'<b>{_sb_n_e}</b> energías<br>'
-                f'<span style="color:#5eead4;">📓 {_sb_n_nb} notebooks '
-                f'· 🎯 {_sb_n_cal} calibraciones</span></div>',
-                unsafe_allow_html=True,
-            )
-        else:
-            st.markdown(
-                '<div style="background:#1c1917;border:1px solid #78350f;'
-                'border-radius:8px;padding:8px 10px;font-size:0.78rem;color:#fde68a;">'
-                '⚠️ Sin datos OOMMF cargados.<br>'
-                '<span style="color:#a78bfa;">Sube archivos abajo ↓</span></div>',
-                unsafe_allow_html=True,
-            )
-        _sb_has_data = True
-    except Exception:
-        _sb_has_data = False
-        st.caption('Módulo de datos no disponible.')
-        _sb_data_dir = ''
+    # Badge de estado
+    if _sb_n_h > 0 or _sb_n_e > 0:
+        st.markdown(
+            f'<div style="background:#134e4a;border:1px solid #14b8a6;'
+            f'border-radius:8px;padding:8px 10px;font-size:0.78rem;color:#ccfbf1;">'
+            f'✅ <b>{_sb_n_h}</b> histéresis &nbsp;·&nbsp; '
+            f'<b>{_sb_n_e}</b> energías<br>'
+            f'<span style="color:#5eead4;">📓 {_sb_n_nb} notebooks '
+            f'· 🎯 {_sb_n_cal} calibraciones</span></div>',
+            unsafe_allow_html=True,
+        )
+    elif _sb_summary_err:
+        st.markdown(
+            f'<div style="background:#2d1515;border:1px solid #ef4444;'
+            f'border-radius:8px;padding:8px 10px;font-size:0.74rem;color:#fca5a5;">'
+            f'⚠️ Error al leer datos:<br>'
+            f'<code style="font-size:0.68rem">{_sb_summary_err[:120]}</code></div>',
+            unsafe_allow_html=True,
+        )
+    else:
+        _n_files = len(list(_os_sb.scandir(_sb_data_dir))) if _os_sb.path.isdir(_sb_data_dir) else 0
+        st.markdown(
+            f'<div style="background:#1c1917;border:1px solid #78350f;'
+            f'border-radius:8px;padding:8px 10px;font-size:0.78rem;color:#fde68a;">'
+            f'📂 Sin datos OOMMF ({_n_files} archivo{"s" if _n_files!=1 else ""} en carpeta)<br>'
+            f'<span style="color:#a78bfa;">Sube archivos abajo ↓</span></div>',
+            unsafe_allow_html=True,
+        )
+    _sb_has_data = True   # módulo siempre disponible; carga independiente del summary
 
     st.markdown('')
 
@@ -826,7 +1188,7 @@ with st.container():
 </div>""", unsafe_allow_html=True)
 
     Hc_prev, Mr_prev, sHc_prev, sMr_prev = predict_geom_with_uncertainty(
-        d_nm, mat_id, geom_id, MODELS)
+        d_nm, mat_id, geom_id, MODELS, T=float(st.session_state.get('T_sim', 300)))
     c4.markdown(f"""
 <div style='background:#1e293b;border:1px solid #334155;border-radius:10px;
      padding:14px;text-align:center;'>
@@ -859,6 +1221,7 @@ fig_main, Hc_val, Mr_val = build_main_figure(
     noise_level=noise_level, dpi=export_dpi,
     compare_mat=compare_mat if compare_enabled else None,
     compare_geom=compare_geom if compare_enabled else None,
+    T=float(st.session_state.get('T_sim', 300)),
 )
 elapsed_ms = (time.perf_counter() - t0) * 1000
 
@@ -993,6 +1356,33 @@ with tab_sim:
     m3.metric('Campo máximo (mT)',              mat['field_max'])
     m4.metric('Factor forma Hc',               f'×{gm["factor_hc"]}')
     m5.metric('⏱ Cómputo',                     f'{elapsed_ms:.0f} ms')
+
+    # ── Exportar a OriginLab ───────────────────────────────────────────────────
+    with st.expander('📤 Exportar para OriginLab', expanded=False):
+        st.markdown(
+            'Descarga los datos de simulación en formato **tab-delimited** '
+            'compatible con **OriginLab 8+**.\n\n'
+            'Incluye: histéresis (ambas ramas) · paisaje de energía · '
+            'tabla comparativa de geometrías con incertidumbre ±σ.\n\n'
+            '**Cómo importar en Origin:** `File → Import → ASCII` y '
+            'activar *Read Long Name / Units / Comments from rows*.'
+        )
+        _T_cur = float(st.session_state.get('T_sim', 300))
+        _origin_bytes = export_to_originlab(
+            mat_id, d_nm, geom_id, Hc_val, Mr_val, _T_cur, MODELS)
+        _origin_fname = (f'SimuMag_{mat["name"].replace(" ","_")}_'
+                         f'{d_nm:.0f}nm_{geom_id}_{_T_cur:.0f}K.txt')
+        st.download_button(
+            label='⬇️  Descargar archivo OriginLab (.txt)',
+            data=_origin_bytes,
+            file_name=_origin_fname,
+            mime='text/plain',
+            use_container_width=True,
+        )
+        st.caption(
+            '💡 En OriginLab puedes generar gráficas de publicación con '
+            'el mismo dataset usando *Plot → Line*, *Plot → Scatter*, etc.'
+        )
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  TAB 2 — COMPARAR  (material + geometría)
@@ -2069,7 +2459,7 @@ with tab_uval:
             _sim_geom = st.selectbox(
                 'Geometría',
                 list(GEOMETRY_MODES.keys()),
-                format_func=lambda g: GEOMETRY_MODES[g]['label'],
+                format_func=lambda g: f"{GEOMETRY_MODES[g]['emoji']}  {GEOMETRY_MODES[g]['name']}",
                 key='oommf_geom',
             )
             _sim_mat = st.selectbox(
@@ -2190,28 +2580,16 @@ with tab_uval:
             )
 
             _mat_name  = MATERIALS_DB[_sim_mat]['name']
-            _geom_name = GEOMETRY_MODES[_sim_geom]['label']
+            _geom_name = f"{GEOMETRY_MODES[_sim_geom]['emoji']} {GEOMETRY_MODES[_sim_geom]['name']}"
+            _apply_plotly_theme(
+                _fig_h,
+                title=f'Lazo de Histéresis — {_geom_name}  ·  {_mat_name}  ·  {_sim_d} nm',
+                xaxis_title='Campo aplicado  H  (mT)',
+                yaxis_title='Magnetización reducida  M / Ms',
+            )
             _fig_h.update_layout(
-                title=dict(
-                    text=(f'Lazo de Histéresis — '
-                          f'{_geom_name}  ·  {_mat_name}  ·  {_sim_d} nm'),
-                    font=dict(color='#f1f5f9', size=14),
-                ),
-                xaxis=dict(
-                    title='H (mT)', color='#94a3b8',
-                    gridcolor='#334155', zerolinecolor='#475569',
-                ),
-                yaxis=dict(
-                    title='M / Ms', color='#94a3b8',
-                    gridcolor='#334155', zerolinecolor='#475569',
-                    range=[-1.15, 1.15],
-                ),
-                paper_bgcolor='#0f172a',
-                plot_bgcolor='#1e293b',
-                font=dict(color='#f1f5f9', size=11),
-                legend=dict(bgcolor='#1e293b', bordercolor='#334155'),
-                height=440,
-                margin=dict(t=60, b=40, l=60, r=40),
+                height=450,
+                yaxis=dict(range=[-1.18, 1.18]),
             )
             st.plotly_chart(_fig_h, use_container_width=True)
 
@@ -2303,20 +2681,20 @@ with tab_uval:
                         mode='lines', name=f'Simulación ({_res.get("runner","SW")}) ↑',
                         line=dict(color='#fb923c', width=2, dash='dot'),
                     ))
+                    _apply_plotly_theme(
+                        _fig_val,
+                        title='Histéresis: OOMMF real vs. simulación actual',
+                        xaxis_title='Campo aplicado  H  (mT)',
+                        yaxis_title='Magnetización reducida  M / Ms',
+                    )
                     _fig_val.update_layout(
-                        title='Histéresis: OOMMF real vs simulación actual',
-                        xaxis_title='H (mT)', yaxis_title='M/Ms',
-                        yaxis=dict(range=[-1.15, 1.15]),
-                        paper_bgcolor='#0f172a', plot_bgcolor='#1e293b',
-                        font=dict(color='#f1f5f9', size=11),
-                        legend=dict(bgcolor='#1e293b', bordercolor='#334155'),
-                        height=340,
-                        margin=dict(t=50, b=40, l=60, r=20),
+                        height=360,
+                        yaxis=dict(range=[-1.18, 1.18]),
                     )
                     _fig_val.add_hline(y=0, line_dash='dash',
-                                       line_color='#475569', line_width=1)
+                                       line_color=_PALETTE['zero'], line_width=0.8)
                     _fig_val.add_vline(x=0, line_dash='dash',
-                                       line_color='#475569', line_width=1)
+                                       line_color=_PALETTE['zero'], line_width=0.8)
                     st.plotly_chart(_fig_val, use_container_width=True)
 
                     _rp = _ref_data.REFERENCE_PARAMS
@@ -2525,7 +2903,7 @@ with tab_uval:
                 _up_geom = st.selectbox(
                     'Geometría',
                     list(GEOMETRY_MODES.keys()),
-                    format_func=lambda g: GEOMETRY_MODES[g]['label'],
+                    format_func=lambda g: f"{GEOMETRY_MODES[g]['emoji']}  {GEOMETRY_MODES[g]['name']}",
                     key='up_geom',
                 )
 
@@ -2603,7 +2981,7 @@ with tab_uval:
             _pcal_d   = st.slider('Diámetro (nm)', 5, 100, 42, key='pcal_d')
             _pcal_g   = st.selectbox(
                 'Geometría', list(GEOMETRY_MODES.keys()),
-                format_func=lambda g: GEOMETRY_MODES[g]['label'],
+                format_func=lambda g: f"{GEOMETRY_MODES[g]['emoji']}  {GEOMETRY_MODES[g]['name']}",
                 key='pcal_geom',
             )
 

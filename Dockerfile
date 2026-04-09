@@ -57,12 +57,20 @@ COPY db.py .
 COPY viz3d.py .
 COPY report.py .
 COPY ubermag_validator.py .
+COPY oommf_data_manager.py .
+COPY oommf_reference_data.py .
 
 # Carpeta de configuración Streamlit
 COPY .streamlit/ .streamlit/
 
-# Crear carpetas de outputs y datos SQLite con permisos correctos
-RUN mkdir -p /app/outputs /app/data && chown -R appuser:appuser /app
+# Datos OOMMF iniciales (ciclos de histéresis, energías, notebooks)
+# La carpeta puede llegar vacía en una imagen limpia; el usuario carga archivos
+# desde la UI → se escriben en el volumen montado en /app/oommf_data
+COPY oommf_data/ oommf_data/
+
+# Crear carpetas de outputs, datos SQLite y oommf_data con permisos correctos
+RUN mkdir -p /app/outputs /app/data /app/oommf_data && \
+    chown -R appuser:appuser /app
 
 # Variable de entorno para la ruta de SQLite
 ENV DB_PATH=/app/data/simulations.db

@@ -24,11 +24,13 @@ services:
       - "8501:8501"
 
     # ── Volúmenes ─────────────────────────────────────────────────────────────
-    # outputs/ → figuras exportadas persisten en tu máquina
-    # data/    → base de datos SQLite persiste entre reinicios del contenedor
+    # outputs/    → figuras exportadas persisten en tu máquina
+    # data/       → base de datos SQLite persiste entre reinicios del contenedor
+    # oommf_data/ → archivos OOMMF subidos desde la UI se guardan aquí
     volumes:
       - ./outputs:/app/outputs
       - ./data:/app/data
+      - ./oommf_data:/app/oommf_data
 
     # ── Variables de entorno ──────────────────────────────────────────────────
     environment:
