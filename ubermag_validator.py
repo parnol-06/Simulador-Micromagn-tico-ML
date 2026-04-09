@@ -946,3 +946,154 @@ VALIDATED_FACTORS: dict[str, dict[str, float]] = {
         'ref': 'Nogués et al. (1999) — exchange bias r_in/r_out=0.55',
     },
 }
+
+# ── Geometría de referencia: 2 esferas Fe (12nm.ipynb) ──────────────────────
+TWO_SPHERE_REFERENCE: dict = {
+    'geometry':     '2 esferas de Fe acopladas dipolamente',
+    'material':     'Fe',
+    'Ms_Am':        1.70e6,      # A/m
+    'K1_Jm3':       48e3,        # J/m³  (anisotropía cúbica)
+    'A_Jm':         2.1e-11,     # J/m
+    'radius_nm':    21.0,        # nm
+    'separation_nm': 6.0,        # nm  separación entre bordes
+    'E0_nm':        24.0,        # nm  distancia borde→origen
+    'box_nm':       (114, 42, 42),
+    'cell_nm':      3.0,
+    'H_max_mT':     400.0,
+    'Hc_mT':        69.2,        # medido de ciclo_histeresis.txt
+    'Hc_desc_mT':   71.9,        # rama descendente
+    'Hc_asc_mT':    66.5,        # rama ascendente
+    'Mr_Ms':        0.3701,      # remanencia normalizada
+    'runner':       'ExeOOMMFRunner',
+    'source':       '12nm.ipynb  (Galvis, Mesa et al. 2025)',
+    'n_cells_total': 38 * 14 * 14,   # 7448 celdas en la caja
+    'n_cells_mat':   int(2 * (4/3) * np.pi * (21/3)**3),  # ≈ 2×770 celdas de material
+}
+
+
+def generate_two_sphere_script(
+        radius_nm: float   = 21.0,
+        sep_nm:    float   = 6.0,
+        Ms_Am:     float   = 1.70e6,
+        K1_Jm3:   float   = 48e3,
+        A_Jm:     float   = 2.1e-11,
+        H_max_mT: float   = 400.0,
+        cell_nm:  float   = 3.0,
+) -> str:
+    """
+    Genera el código Ubermag/oommfc para simular dos nanopartículas esféricas.
+
+    Basado en 12nm.ipynb (Galvis, Mesa et al. 2025).
+    La separación entre bordes es sep_nm; E_0 = radius_nm + sep_nm/2.
+
+    Parameters
+    ----------
+    radius_nm : radio de cada esfera (nm)
+    sep_nm    : separación entre bordes (nm)
+    Ms_Am     : magnetización de saturación (A/m)
+    K1_Jm3   : constante de anisotropía cúbica (J/m³)
+    A_Jm     : constante de intercambio (J/m)
+    H_max_mT : campo máximo de barrido (mT)
+    cell_nm   : tamaño de celda (nm)
+
+    Returns
+    -------
+    str: script Python/Ubermag ejecutable
+    """
+    E0_nm = radius_nm + sep_nm / 2.0
+    r_m   = radius_nm * 1e-9
+    E0_m  = E0_nm    * 1e-9
+    Lx_m  = (4.0 * E0_nm + 4.0 * radius_nm) * 1e-9
+    Ly_m  = (2.0 * radius_nm + 8.0) * 1e-9
+    Lz_m  = Ly_m
+    c_m   = cell_nm * 1e-9
+    H_max_T = H_max_mT * 1e-3
+
+    return f'''\
+# ── Ubermag: 2 esferas de Fe  r={radius_nm:.0f} nm  sep={sep_nm:.0f} nm ──────────────────
+import micromagneticmodel as mm
+import discretisedfield   as df
+import oommfc            as oc
+import numpy             as np
+import pandas            as pd
+
+# Geometría
+radius = {r_m:.3e}   # m  (radio)
+E_0    = {E0_m:.3e}  # m  (distancia borde→origen)
+Lx, Ly, Lz = {Lx_m:.3e}, {Ly_m:.3e}, {Lz_m:.3e}   # m
+cell = {c_m:.2e}     # m  (tamaño de celda)
+
+region = df.Region(p1=(-Lx/2, -Ly/2, -Lz/2), p2=(Lx/2, Ly/2, Lz/2))
+mesh   = df.Mesh(region=region, cell=(cell, cell, cell))
+
+# Material: Fe
+Ms  = {Ms_Am:.4e}   # A/m
+K   = {K1_Jm3:.2e}  # J/m³  (anisotropía cúbica)
+A   = {A_Jm:.2e}    # J/m   (intercambio)
+
+# Función de forma: dos esferas centradas en ±E_0
+def Ms_fun(point):
+    x, y, z = point
+    r1 = (x + E_0)**2 + y**2 + z**2
+    r2 = (x - E_0)**2 + y**2 + z**2
+    return Ms if (r1 <= radius**2 or r2 <= radius**2) else 0
+
+# Sistema micromagnético
+system = mm.System(name="dos_esferas_fe_{radius_nm:.0f}nm_sep{sep_nm:.0f}nm")
+u1, u2 = (1, 0, 0), (0, 1, 0)
+system.dynamics = (
+    mm.Precession(gamma0=mm.consts.gamma0) + mm.Damping(alpha=1.0)
+)
+system.m = df.Field(mesh, nvdim=3, value=(1, 0, 0), norm=Ms_fun)
+
+# Bucle de histéresis ±{H_max_mT:.0f} mT
+td = oc.TimeDriver()
+fd, mg, ez, ek, ex, ed = [], [], [], [], [], []
+
+H_vals = np.concatenate([
+    np.arange({H_max_T:.2f}, -{H_max_T:.2f} - 0.001, -0.010),
+    np.arange(-{H_max_T:.2f},  {H_max_T:.2f} + 0.001,  0.010),
+])
+
+for B in H_vals:
+    H = (B / mm.consts.mu0, 0, 0)
+    system.energy = (
+        mm.Exchange(A=A)
+        + mm.CubicAnisotropy(K=K, u1=u1, u2=u2)
+        + mm.Demag()
+        + mm.Zeeman(H=H)
+    )
+    td.drive(system, t=5e-9, n=10)
+
+    # Magnetización normalizada en las esferas
+    valid = system.m.norm.array > 0
+    M_x  = np.sum(system.m.array[..., 0] * valid)
+    V_mat = np.sum(valid) * cell**3
+    M_norm = M_x / (Ms * np.sum(valid))
+    mg.append(M_norm)
+    fd.append(B * 1e3)   # mT
+
+    # Energías
+    Ez = oc.compute(system.energy.zeeman.energy, system)
+    Ek = oc.compute(system.energy.cubicanisotropy.energy, system)
+    Ex = oc.compute(system.energy.exchange.energy, system)
+    Ed = oc.compute(system.energy.demag.energy, system)
+    ez.append(Ez); ek.append(Ek); ex.append(Ex); ed.append(Ed)
+
+# Exportar
+df_out = pd.DataFrame(dict(fd=fd, mg=mg, ez=ez, ek=ek, ex=ex, ed=ed))
+df_out.to_csv("histeresis_dos_esferas.csv", index=False)
+print(df_out[["fd","mg"]].describe())
+
+# Gráfica
+import matplotlib.pyplot as plt
+n = len(fd) // 2
+plt.figure(figsize=(7, 5))
+plt.plot(fd[:n], mg[:n], "b-o", ms=3, label="H ↓")
+plt.plot(fd[n:], mg[n:], "r-o", ms=3, label="H ↑")
+plt.axhline(0, color="0.5", lw=0.8, ls="--")
+plt.axvline(0, color="0.5", lw=0.8, ls="--")
+plt.xlabel("H (mT)"); plt.ylabel("M/Ms")
+plt.title("2 esferas Fe  r={radius_nm:.0f} nm  sep={sep_nm:.0f} nm")
+plt.legend(); plt.tight_layout(); plt.show()
+'''

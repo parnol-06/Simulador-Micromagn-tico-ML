@@ -30,6 +30,16 @@ import ubermag_validator as _uval
 import report    as _report
 from ml_engine import MicromagneticMLEngine
 
+# Datos reales de simulación OOMMF (2 esferas Fe, 12nm.ipynb)
+try:
+    import sys as _sys
+    _sys.path.insert(0, os.path.dirname(__file__))
+    import oommf_reference_data as _ref_data
+    _REAL_DATA_OK = _ref_data.data_available()
+except Exception:
+    _ref_data    = None
+    _REAL_DATA_OK = False
+
 warnings.filterwarnings('ignore')
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -642,6 +652,133 @@ with st.sidebar:
     if btn_sim:
         st.session_state.sim_done = True
 
+    st.divider()
+
+    # ── 📂 Carga de datos OOMMF — siempre visible en sidebar ─────────────────
+    st.markdown('### 📂 Datos OOMMF')
+
+    # Resumen del dataset actual
+    try:
+        import oommf_data_manager as _odm_sb
+        _sb_sum = _odm_sb.dataset_summary()
+        _sb_n_h  = _sb_sum.get('n_hysteresis', 0)
+        _sb_n_e  = _sb_sum.get('n_energies', 0)
+        _sb_n_nb = _sb_sum.get('n_notebooks', 0)
+        _sb_n_cal= _sb_sum.get('n_calibration', 0)
+        _sb_data_dir = _sb_sum.get('data_dir', '')
+
+        # Badge de estado
+        if _sb_n_h > 0 or _sb_n_e > 0:
+            st.markdown(
+                f'<div style="background:#134e4a;border:1px solid #14b8a6;'
+                f'border-radius:8px;padding:8px 10px;font-size:0.78rem;color:#ccfbf1;">'
+                f'✅ <b>{_sb_n_h}</b> histéresis &nbsp;·&nbsp; '
+                f'<b>{_sb_n_e}</b> energías<br>'
+                f'<span style="color:#5eead4;">📓 {_sb_n_nb} notebooks '
+                f'· 🎯 {_sb_n_cal} calibraciones</span></div>',
+                unsafe_allow_html=True,
+            )
+        else:
+            st.markdown(
+                '<div style="background:#1c1917;border:1px solid #78350f;'
+                'border-radius:8px;padding:8px 10px;font-size:0.78rem;color:#fde68a;">'
+                '⚠️ Sin datos OOMMF cargados.<br>'
+                '<span style="color:#a78bfa;">Sube archivos abajo ↓</span></div>',
+                unsafe_allow_html=True,
+            )
+        _sb_has_data = True
+    except Exception:
+        _sb_has_data = False
+        st.caption('Módulo de datos no disponible.')
+        _sb_data_dir = ''
+
+    st.markdown('')
+
+    # Uploader compacto
+    _sb_files = st.file_uploader(
+        'Arrastra aquí tus archivos',
+        type=['txt', 'ipynb'],
+        accept_multiple_files=True,
+        key='sb_oommf_uploader',
+        help='Archivos .txt (fd/mg) de energías o histéresis, o .ipynb de simulación',
+        label_visibility='collapsed',
+    )
+
+    # Opciones de etiquetado (colapsadas para no saturar)
+    with st.expander('⚙️ Opciones de carga'):
+        _sb_mat = st.selectbox(
+            'Material',
+            ['— inferir —'] + list(MATERIALS_DB.keys()),
+            format_func=lambda x: (
+                '— inferir del archivo —' if x == '— inferir —'
+                else f"{MATERIALS_DB[x]['emoji']} {MATERIALS_DB[x]['name']}"
+            ),
+            key='sb_up_mat',
+        )
+        _sb_d = st.number_input(
+            'Diámetro (nm)', min_value=1.0, max_value=500.0,
+            value=42.0, step=1.0, key='sb_up_d',
+            help='Diámetro de la nanopartícula simulada',
+        )
+        _sb_geom_up = st.selectbox(
+            'Geometría',
+            list(GEOMETRY_MODES.keys()),
+            format_func=lambda g: f"{GEOMETRY_MODES[g]['emoji']} {GEOMETRY_MODES[g]['name']}",
+            key='sb_up_geom',
+        )
+
+    # Procesar archivos subidos
+    if _sb_files and _sb_has_data:
+        _sb_mat_id = None if _sb_mat == '— inferir —' else _sb_mat
+        _any_hyst  = False
+        for _sbf in _sb_files:
+            _tmp_sb = f'/tmp/_sb_upload_{_sbf.name}'
+            with open(_tmp_sb, 'wb') as _fh:
+                _fh.write(_sbf.getbuffer())
+            try:
+                _r_sb = _odm_sb.ingest_uploaded_file(
+                    src_path=_tmp_sb,
+                    data_dir=_sb_data_dir,
+                    mat_id=_sb_mat_id,
+                    d_nm=float(_sb_d),
+                    geom_id=_sb_geom_up,
+                )
+                if _r_sb.get('status') == 'ok':
+                    _dtype_sb = _r_sb.get('dtype', '?')
+                    _hp_sb    = _r_sb.get('hyst_params', {})
+                    if _hp_sb:
+                        st.success(
+                            f'✅ **{_sbf.name}**\n\n'
+                            f'Tipo: `{_dtype_sb}`\n\n'
+                            f'Hc = **{_hp_sb["Hc_mT"]:.1f} mT** · '
+                            f'Mr = **{_hp_sb["Mr_Ms"]:.4f}**'
+                        )
+                        if _r_sb.get('calibration_saved'):
+                            st.caption(
+                                f'🎯 Calibración guardada: '
+                                f'{_sb_d:.0f} nm · {_sb_mat_id or "auto"}'
+                            )
+                        _any_hyst = True
+                    else:
+                        st.success(
+                            f'✅ **{_sbf.name}**\n\nTipo: `{_dtype_sb}`'
+                        )
+                else:
+                    st.error(f'❌ {_sbf.name}: {_r_sb.get("message","Error")}')
+            except Exception as _e_sb:
+                st.error(f'❌ {_sbf.name}: {_e_sb}')
+
+        # Limpiar caches de visualización afectados
+        for _ck in list(st.session_state.keys()):
+            if _ck.startswith('fig_energy_real') or _ck.startswith('oommf_res_'):
+                del st.session_state[_ck]
+
+        if _any_hyst:
+            st.info(
+                '🔄 Ve a **⚡ Componentes de Energía** y activa el toggle '
+                '"🔬 Mostrar datos reales OOMMF" para ver los datos recién cargados.'
+            )
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  PANTALLA PRINCIPAL — HOME CARD  (Dashboard único)
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -752,6 +889,66 @@ if st.session_state.get('_last_db_key') != _last_key:
     # ── Fase 4: feedback online — cada simulación mejora el modelo ───────────
     MODELS.add_feedback(mat_id, d_nm, Hc_val, Mr_val)
     st.session_state['_last_db_key'] = _last_key
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  BANNER DE DATOS OOMMF — aparece ANTES de los tabs
+# ═══════════════════════════════════════════════════════════════════════════════
+try:
+    import oommf_data_manager as _odm_banner
+    _bn_sum  = _odm_banner.dataset_summary()
+    _bn_n_h  = _bn_sum.get('n_hysteresis', 0)
+    _bn_n_e  = _bn_sum.get('n_energies',   0)
+    _bn_n_nb = _bn_sum.get('n_notebooks',  0)
+    _bn_n_cal= _bn_sum.get('n_calibration',0)
+    _bn_dir  = _bn_sum.get('data_dir', 'oommf_data/')
+
+    if _bn_n_h > 0 or _bn_n_e > 0:
+        # ── Dataset cargado: mostrar resumen compacto ─────────────────────────
+        with st.container():
+            _bn_hc_r = _bn_sum.get('hc_range', (0, 0))
+            _bn_mr_r = _bn_sum.get('mr_range', (0, 0))
+            _bn_mats = ', '.join(_bn_sum.get('materials', ['?'])) or '—'
+            _b1, _b2, _b3, _b4, _b5 = st.columns([2, 1, 1, 1, 1])
+            _b1.markdown(
+                f'<div style="background:#0d3329;border:1px solid #14b8a6;'
+                f'border-radius:8px;padding:10px 14px;">'
+                f'<span style="color:#14b8a6;font-weight:700;font-size:0.9rem;">'
+                f'📂 Datos OOMMF activos</span><br>'
+                f'<span style="color:#5eead4;font-size:0.78rem;">'
+                f'Carpeta: <code>oommf_data/</code> · '
+                f'Material(es): <b>{_bn_mats}</b></span></div>',
+                unsafe_allow_html=True,
+            )
+            _b2.metric('Histéresis', _bn_n_h)
+            _b3.metric('Energías',   _bn_n_e)
+            _b4.metric('Notebooks',  _bn_n_nb)
+            _b5.metric('Cal. ML',    _bn_n_cal)
+
+            # Si hay histéresis, mostrar Hc/Mr del primer dataset
+            if _bn_n_h > 0:
+                _bn_hds = _odm_banner.scan_datasets(_bn_dir)['hysteresis']
+                _hc_lbl = '  ·  '.join(
+                    f"{h['filename'].split('.')[0]}: Hc={h.get('Hc_mT','?'):.1f} mT  Mr={h.get('Mr_Ms','?'):.4f}"
+                    for h in _bn_hds
+                )
+                st.caption(f'🔬 {_hc_lbl}  ·  '
+                           f'Hc rango [{_bn_hc_r[0]:.1f}–{_bn_hc_r[1]:.1f}] mT  '
+                           f'Mr rango [{_bn_mr_r[0]:.4f}–{_bn_mr_r[1]:.4f}]')
+    else:
+        # ── Sin datos: invitación prominente a cargar ─────────────────────────
+        st.markdown(
+            '<div style="background:#1c1917;border:1px dashed #78350f;'
+            'border-radius:10px;padding:14px 18px;margin-bottom:6px;">'
+            '<span style="color:#fbbf24;font-weight:700;">📂 Sin datos OOMMF</span>'
+            '&nbsp;&nbsp;'
+            '<span style="color:#a3a3a3;font-size:0.85rem;">'
+            'Sube archivos <code>.txt</code> (fd/mg) o <code>.ipynb</code> '
+            'desde la barra lateral para activar la visualización de energías reales '
+            'y la calibración ML.</span></div>',
+            unsafe_allow_html=True,
+        )
+except Exception:
+    pass
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  TABS DE RESULTADOS
@@ -1255,15 +1452,186 @@ with tab_3d:
             'Magnitudes calculadas con parámetros físicos del material. '
             'Inspirado en Fig. 3 de Galvis, Mesa et al. (Results in Physics, 2025).'
         )
-        n_curvas = st.slider('Número de tamaños', 3, 10, 5, key='energy_n')
-        _eng_key = f'fig_energy_{mat_id}_{n_curvas}'
-        if _eng_key not in st.session_state:
-            with st.spinner('Calculando componentes de energía…'):
-                st.session_state[_eng_key] = _viz3d.energy_components_4panel(
-                    mat_id, MODELS, MATERIALS_DB, _predict_for_viz, n_sizes=n_curvas)
-        fig_energy4 = st.session_state[_eng_key]
-        st.plotly_chart(fig_energy4, use_container_width=True)
-        _export_plotly(fig_energy4, f'energia_{mat_id}_{d_nm:.0f}nm')
+
+        # ── Toggle: datos reales OOMMF ────────────────────────────────────────
+        _show_real = False
+        if _REAL_DATA_OK:
+            _show_real = st.toggle(
+                '🔬 Mostrar datos reales OOMMF (2 esferas Fe, r=21 nm, separación=6 nm)',
+                value=False, key='energy_show_real',
+            )
+
+        if _show_real and _REAL_DATA_OK:
+            # ── Visualización datos reales de 12nm.ipynb ─────────────────────
+            st.info(
+                '**Datos reales OOMMF** · Sistema: 2 esferas de Fe (r=21 nm, sep=6 nm) '
+                'en caja 114×42×42 nm · Barrido ±400 mT · Runner: ExeOOMMFRunner · '
+                'Fuente: `12nm.ipynb` (Galvis, Mesa et al.)'
+            )
+            _rd_key = 'fig_energy_real_oommf'
+            if _rd_key not in st.session_state:
+                with st.spinner('Cargando datos reales OOMMF…'):
+                    _hist   = _ref_data.load_hysteresis()
+                    _energ  = _ref_data.load_energies()
+
+                    _fig_real = go.Figure()
+
+                    # ── Subplots: 5 paneles (histeresis + 4 energías) ─────────
+                    from plotly.subplots import make_subplots
+                    _fig_real = make_subplots(
+                        rows=3, cols=2,
+                        subplot_titles=[
+                            'Ciclo de Histéresis  (M/Ms)',
+                            'Energía de Anisotropía  (J)',
+                            'Energía Zeeman  (J)',
+                            'Energía Dipolar  (J)',
+                            'Energía de Intercambio  (J)',
+                            '',
+                        ],
+                        vertical_spacing=0.12,
+                        horizontal_spacing=0.10,
+                    )
+
+                    _clr_desc = '#38bdf8'
+                    _clr_asc  = '#fb923c'
+
+                    # Panel 1: Histéresis
+                    _fig_real.add_trace(go.Scatter(
+                        x=_hist['fd_desc'], y=_hist['mg_desc'],
+                        mode='lines+markers', name='M/Ms ↓', marker_size=4,
+                        line=dict(color=_clr_desc, width=2),
+                    ), row=1, col=1)
+                    _fig_real.add_trace(go.Scatter(
+                        x=_hist['fd_asc'], y=_hist['mg_asc'],
+                        mode='lines+markers', name='M/Ms ↑', marker_size=4,
+                        line=dict(color=_clr_asc, width=2),
+                    ), row=1, col=1)
+                    # Hc markers
+                    _Hc_r, _Mr_r = _ref_data.extract_hc_mr()
+                    _fig_real.add_vline(x= _Hc_r, line_dash='dot',
+                        line_color='#f43f5e', line_width=1.5, row=1, col=1)
+                    _fig_real.add_vline(x=-_Hc_r, line_dash='dot',
+                        line_color='#f43f5e', line_width=1.5, row=1, col=1)
+
+                    # Panel 2: Anisotropía
+                    _ean = _energ['anisotropia']
+                    _fig_real.add_trace(go.Scatter(
+                        x=_ean['fd_desc'], y=_ean['mg_desc'],
+                        mode='lines+markers', name='E_anis ↓', marker_size=4,
+                        line=dict(color=_clr_desc, width=2), showlegend=False,
+                    ), row=1, col=2)
+                    _fig_real.add_trace(go.Scatter(
+                        x=_ean['fd_asc'], y=_ean['mg_asc'],
+                        mode='lines+markers', name='E_anis ↑', marker_size=4,
+                        line=dict(color=_clr_asc, width=2), showlegend=False,
+                    ), row=1, col=2)
+
+                    # Panel 3: Zeeman
+                    _ez = _energ['zeeman']
+                    _fig_real.add_trace(go.Scatter(
+                        x=_ez['fd_desc'], y=_ez['mg_desc'],
+                        mode='lines+markers', name='E_Z ↓', marker_size=4,
+                        line=dict(color=_clr_desc, width=2), showlegend=False,
+                    ), row=2, col=1)
+                    _fig_real.add_trace(go.Scatter(
+                        x=_ez['fd_asc'], y=_ez['mg_asc'],
+                        mode='lines+markers', name='E_Z ↑', marker_size=4,
+                        line=dict(color=_clr_asc, width=2), showlegend=False,
+                    ), row=2, col=1)
+
+                    # Panel 4: Dipolar
+                    _ed = _energ['dipolar']
+                    _fig_real.add_trace(go.Scatter(
+                        x=_ed['fd_desc'], y=_ed['mg_desc'],
+                        mode='lines+markers', name='E_dip ↓', marker_size=4,
+                        line=dict(color=_clr_desc, width=2), showlegend=False,
+                    ), row=2, col=2)
+                    _fig_real.add_trace(go.Scatter(
+                        x=_ed['fd_asc'], y=_ed['mg_asc'],
+                        mode='lines+markers', name='E_dip ↑', marker_size=4,
+                        line=dict(color=_clr_asc, width=2), showlegend=False,
+                    ), row=2, col=2)
+
+                    # Panel 5: Intercambio
+                    _ex = _energ['intercambio']
+                    _fig_real.add_trace(go.Scatter(
+                        x=_ex['fd_desc'], y=_ex['mg_desc'],
+                        mode='lines+markers', name='E_ex ↓', marker_size=4,
+                        line=dict(color=_clr_desc, width=2), showlegend=False,
+                    ), row=3, col=1)
+                    _fig_real.add_trace(go.Scatter(
+                        x=_ex['fd_asc'], y=_ex['mg_asc'],
+                        mode='lines+markers', name='E_ex ↑', marker_size=4,
+                        line=dict(color=_clr_asc, width=2), showlegend=False,
+                    ), row=3, col=1)
+
+                    # Layout global
+                    _fig_real.update_layout(
+                        height=850,
+                        paper_bgcolor='#0f172a',
+                        plot_bgcolor='#1e293b',
+                        font=dict(color='#f1f5f9', size=11),
+                        title=dict(
+                            text='Datos reales OOMMF — 2 esferas Fe · r=21 nm · sep=6 nm · ±400 mT',
+                            font=dict(color='#f1f5f9', size=14),
+                        ),
+                        legend=dict(
+                            bgcolor='#1e293b', bordercolor='#334155',
+                            title=dict(text='Rama'),
+                        ),
+                        margin=dict(t=80, b=40, l=60, r=30),
+                    )
+                    # Ejes en todos los subplots
+                    for _ax in _fig_real.layout:
+                        if _ax.startswith('xaxis') or _ax.startswith('yaxis'):
+                            _fig_real.layout[_ax].update(
+                                gridcolor='#334155', zerolinecolor='#475569',
+                                color='#94a3b8',
+                            )
+                    # Etiquetas x
+                    for _r, _c in [(1,1),(1,2),(2,1),(2,2),(3,1)]:
+                        _fig_real.update_xaxes(title_text='H (mT)', row=_r, col=_c)
+                    # Etiquetas y
+                    _ylabels = {(1,1):'M/Ms',(1,2):'E (J)',(2,1):'E (J)',
+                                (2,2):'E (J)',(3,1):'E (J)'}
+                    for (_r,_c), _lbl in _ylabels.items():
+                        _fig_real.update_yaxes(title_text=_lbl, row=_r, col=_c)
+
+                    st.session_state[_rd_key] = _fig_real
+
+            fig_real_oommf = st.session_state[_rd_key]
+            st.plotly_chart(fig_real_oommf, use_container_width=True)
+            _export_plotly(fig_real_oommf, 'energia_real_oommf_2esferas_fe')
+
+            # Métricas extraídas de los datos reales
+            st.markdown('##### Valores extraídos de los datos reales')
+            _rp = _ref_data.REFERENCE_PARAMS
+            _rm1, _rm2, _rm3, _rm4, _rm5 = st.columns(5)
+            _rm1.metric('Hc (mT)',         f"{_rp['Hc_mT']:.1f}")
+            _rm2.metric('Mr / Ms',          f"{_rp['Mr_Ms']:.4f}")
+            _rm3.metric('H_max (mT)',       f"{_rp['H_max_mT']:.0f}")
+            _rm4.metric('Radio (nm)',        f"{_rp['radius_nm']:.0f}")
+            _rm5.metric('Separación (nm)',   f"{_rp['separation_nm']:.0f}")
+            st.caption(
+                f"Material: **{_rp['material']}**  ·  "
+                f"Ms = {_rp['Ms_Am']/1e6:.2f} MA/m  ·  "
+                f"K₁ = {_rp['K1_Jm3']/1e3:.0f} kJ/m³  ·  "
+                f"A = {_rp['A_Jm']*1e12:.1f} pJ/m  ·  "
+                f"Celda = {_rp['cell_nm']:.0f} nm  ·  "
+                f"Fuente: `{_rp['source_nb']}`"
+            )
+
+        else:
+            # ── Vista ML: energía calculada para múltiples tamaños ────────────
+            n_curvas = st.slider('Número de tamaños', 3, 10, 5, key='energy_n')
+            _eng_key = f'fig_energy_{mat_id}_{n_curvas}'
+            if _eng_key not in st.session_state:
+                with st.spinner('Calculando componentes de energía…'):
+                    st.session_state[_eng_key] = _viz3d.energy_components_4panel(
+                        mat_id, MODELS, MATERIALS_DB, _predict_for_viz, n_sizes=n_curvas)
+            fig_energy4 = st.session_state[_eng_key]
+            st.plotly_chart(fig_energy4, use_container_width=True)
+            _export_plotly(fig_energy4, f'energia_{mat_id}_{d_nm:.0f}nm')
 
     elif '🏔' in viz_sel:
         st.markdown(f'**Superficie E(H, d) — {mat["name"]}**')
@@ -1870,6 +2238,111 @@ with tab_uval:
                 f'(modelo entrenado sobre histéresis LLG + datos OOMMF de referencia)'
             )
 
+            # ── Validación contra datos reales (12nm.ipynb) ───────────────────
+            if _REAL_DATA_OK and _ref_data is not None:
+                _Hc_real, _Mr_real = _ref_data.extract_hc_mr()
+                with st.expander(
+                    '📊 Validación contra datos reales OOMMF (2 esferas Fe · 12nm.ipynb)',
+                    expanded=(_sim_mat == 'fe')
+                ):
+                    st.info(
+                        '**Referencia real**: simulación con ExeOOMMFRunner de 2 esferas '
+                        f'de Fe (r=21 nm, sep=6 nm, celda=3 nm, ±400 mT).  '
+                        f'Hc_real = **{_Hc_real:.1f} mT**  ·  Mr_real = **{_Mr_real:.4f}**'
+                    )
+                    _val_df = pd.DataFrame({
+                        'Fuente': [
+                            '🔬 OOMMF real (12nm.ipynb)',
+                            f'⚙️ Simulación actual ({_res.get("runner","SW")})',
+                            '🤖 ML Ensemble',
+                        ],
+                        'Hc (mT)': [
+                            f'{_Hc_real:.1f}',
+                            f"{_res['Hc_mT']:.1f}",
+                            f'{_Hc_ml:.1f}',
+                        ],
+                        'Mr / Ms': [
+                            f'{_Mr_real:.4f}',
+                            f"{_res['Mr']:.4f}",
+                            f'{_Mr_ml:.4f}',
+                        ],
+                        'Δ Hc vs OOMMF real': [
+                            '0.0 %',
+                            f"{abs(_res['Hc_mT']-_Hc_real)/max(_Hc_real,1)*100:.1f} %",
+                            f'{abs(_Hc_ml-_Hc_real)/max(_Hc_real,1)*100:.1f} %',
+                        ],
+                        'Δ Mr vs OOMMF real': [
+                            '0.000',
+                            f"{abs(_res['Mr']-_Mr_real):.4f}",
+                            f'{abs(_Mr_ml-_Mr_real):.4f}',
+                        ],
+                    })
+                    st.dataframe(_val_df, use_container_width=True, hide_index=True)
+
+                    # Mini-gráfica: histéresis real + SW actual superpuestas
+                    _hist_r = _ref_data.load_hysteresis()
+                    _fig_val = go.Figure()
+                    _fig_val.add_trace(go.Scatter(
+                        x=_hist_r['fd_desc'], y=_hist_r['mg_desc'],
+                        mode='lines', name='OOMMF real ↓',
+                        line=dict(color='#34d399', width=2.5),
+                    ))
+                    _fig_val.add_trace(go.Scatter(
+                        x=_hist_r['fd_asc'], y=_hist_r['mg_asc'],
+                        mode='lines', name='OOMMF real ↑',
+                        line=dict(color='#34d399', width=2.5, dash='dash'),
+                    ))
+                    _nh2 = len(_res['H']) // 2
+                    _fig_val.add_trace(go.Scatter(
+                        x=_res['H'][:_nh2], y=_res['M'][:_nh2],
+                        mode='lines', name=f'Simulación ({_res.get("runner","SW")}) ↓',
+                        line=dict(color='#38bdf8', width=2, dash='dot'),
+                    ))
+                    _fig_val.add_trace(go.Scatter(
+                        x=_res['H'][_nh2:], y=_res['M'][_nh2:],
+                        mode='lines', name=f'Simulación ({_res.get("runner","SW")}) ↑',
+                        line=dict(color='#fb923c', width=2, dash='dot'),
+                    ))
+                    _fig_val.update_layout(
+                        title='Histéresis: OOMMF real vs simulación actual',
+                        xaxis_title='H (mT)', yaxis_title='M/Ms',
+                        yaxis=dict(range=[-1.15, 1.15]),
+                        paper_bgcolor='#0f172a', plot_bgcolor='#1e293b',
+                        font=dict(color='#f1f5f9', size=11),
+                        legend=dict(bgcolor='#1e293b', bordercolor='#334155'),
+                        height=340,
+                        margin=dict(t=50, b=40, l=60, r=20),
+                    )
+                    _fig_val.add_hline(y=0, line_dash='dash',
+                                       line_color='#475569', line_width=1)
+                    _fig_val.add_vline(x=0, line_dash='dash',
+                                       line_color='#475569', line_width=1)
+                    st.plotly_chart(_fig_val, use_container_width=True)
+
+                    _rp = _ref_data.REFERENCE_PARAMS
+                    st.caption(
+                        f"Sistema real: {_rp['material']} · "
+                        f"Ms={_rp['Ms_Am']/1e6:.2f} MA/m · "
+                        f"K₁={_rp['K1_Jm3']/1e3:.0f} kJ/m³ · "
+                        f"A={_rp['A_Jm']*1e12:.1f} pJ/m · "
+                        f"Caja {_rp['box_nm'][0]}×{_rp['box_nm'][1]}×{_rp['box_nm'][2]} nm · "
+                        f"Celda={_rp['cell_nm']:.0f} nm"
+                    )
+
+            # ── Código Ubermag reproducible (12nm.ipynb) ─────────────────────
+            if _REAL_DATA_OK and _ref_data is not None:
+                with st.expander('📓 Código Ubermag reproducible — `12nm.ipynb`'):
+                    st.markdown(
+                        'Código Python/Ubermag que reproduce la simulación de referencia. '
+                        'Requiere `oommfc`, `discretisedfield`, `micromagneticmodel` y OOMMF instalado.'
+                    )
+                    st.code(_ref_data.NOTEBOOK_CODE, language='python')
+                    st.caption(
+                        '**Parámetros clave**: Ms=1.7 MA/m · K=48 kJ/m³ (cúbica) · '
+                        'A=2.1×10⁻¹¹ J/m · r=21 nm · sep=6 nm · celda=3 nm · '
+                        'Driver: TimeDriver t=5 ns/paso'
+                    )
+
             # ── Parámetros del sistema simulado ───────────────────────────────
             with st.expander('📋 Parámetros del sistema micromagnético'):
                 try:
@@ -1923,3 +2396,249 @@ with tab_uval:
             'en `GEOMETRY_MODES` del simulador, derivados de cálculos analíticos '
             'validados con el stack Ubermag.'
         )
+
+        st.divider()
+
+        # ══════════════════════════════════════════════════════════════════════
+        # ── 📂 Gestión dinámica de datos OOMMF ────────────────────────────────
+        # ══════════════════════════════════════════════════════════════════════
+        st.markdown('#### 📂 Datos OOMMF — Carga y Entrenamiento Dinámico')
+        st.markdown(
+            'El simulador detecta automáticamente nuevos archivos en `oommf_data/`. '
+            'Sube archivos `.txt` (fd/mg) o `.ipynb` para ampliar el dataset de '
+            'calibración y mejorar las predicciones ML.'
+        )
+
+        # ── Estado actual del dataset ─────────────────────────────────────────
+        if _ref_data is not None:
+            _dssum = _ref_data.dataset_summary()
+        else:
+            _dssum = {}
+
+        _ds1, _ds2, _ds3, _ds4, _ds5 = st.columns(5)
+        _ds1.metric('Ciclos de histéresis',  _dssum.get('n_hysteresis', 0))
+        _ds2.metric('Series de energía',     _dssum.get('n_energies',   0))
+        _ds3.metric('Notebooks (.ipynb)',     _dssum.get('n_notebooks',  0))
+        _ds4.metric('Puntos calibración ML', _dssum.get('n_calibration', 0))
+        _ds5.metric('Materiales detectados', len(_dssum.get('materials', [])))
+
+        # ── Browser de datasets ───────────────────────────────────────────────
+        with st.expander('🔍 Explorar datasets disponibles', expanded=False):
+            if _REAL_DATA_OK and _ref_data is not None:
+                import oommf_data_manager as _odm
+                _all_ds = _odm.scan_datasets(_dssum.get('data_dir'))
+
+                # Histéresis
+                if _all_ds['hysteresis']:
+                    st.markdown('**Ciclos de histéresis detectados**')
+                    _h_rows = []
+                    for _h in _all_ds['hysteresis']:
+                        _h_rows.append({
+                            'Archivo':    _h['filename'],
+                            'Puntos':     _h['n_points'],
+                            'Hc (mT)':   f"{_h.get('Hc_mT', '?'):.1f}",
+                            'Mr / Ms':   f"{_h.get('Mr_Ms', '?'):.4f}",
+                            'H_max (mT)': f"{_h.get('H_max_mT', '?'):.0f}",
+                        })
+                    st.dataframe(pd.DataFrame(_h_rows),
+                                 use_container_width=True, hide_index=True)
+
+                # Energías
+                if _all_ds['energies']:
+                    st.markdown('**Series de energía detectadas**')
+                    _e_rows = [
+                        {'Archivo': e['filename'], 'Tipo': e['dtype'],
+                         'Label': e['label'], 'Puntos': e['n_points']}
+                        for e in _all_ds['energies']
+                    ]
+                    st.dataframe(pd.DataFrame(_e_rows),
+                                 use_container_width=True, hide_index=True)
+
+                # Notebooks
+                if _all_ds['notebooks']:
+                    st.markdown('**Notebooks detectados**')
+                    _nb_rows = [
+                        {
+                            'Archivo':  nb.get('source_nb', '?'),
+                            'Material': nb.get('material_guess', '?'),
+                            'Ms (MA/m)': f"{nb.get('Ms_Am', 0)/1e6:.2f}",
+                            'K (kJ/m³)': f"{nb.get('K1_Jm3', 0)/1e3:.0f}",
+                            'r (nm)':    f"{nb.get('radius_nm', '?')}",
+                            'sep (nm)':  f"{nb.get('separation_nm', '?')}",
+                            'celda (nm)': f"{nb.get('cell_nm', '?')}",
+                            'Runner':    nb.get('runner', '?'),
+                        }
+                        for nb in _all_ds['notebooks']
+                    ]
+                    st.dataframe(pd.DataFrame(_nb_rows),
+                                 use_container_width=True, hide_index=True)
+
+                # Puntos de calibración
+                _cal_pts = _odm.load_calibration_db()
+                if _cal_pts:
+                    st.markdown('**Puntos de calibración ML guardados**')
+                    st.dataframe(
+                        pd.DataFrame(_cal_pts),
+                        use_container_width=True, hide_index=True,
+                    )
+                else:
+                    st.caption(
+                        'No hay puntos de calibración guardados. '
+                        'Sube un ciclo de histéresis con material y diámetro '
+                        'especificados para generar calibración.'
+                    )
+            else:
+                st.info('Datos OOMMF no disponibles. Sube archivos para activar.')
+
+        # ── Carga de nuevos archivos ──────────────────────────────────────────
+        with st.expander('⬆️ Cargar nuevos datos OOMMF / Ubermag', expanded=False):
+            st.markdown(
+                'Sube archivos `.txt` (formato `fd  mg`, tab-separado) o '
+                '`.ipynb` de Jupyter para ampliar el dataset. '
+                'El sistema clasifica y parsea automáticamente cada archivo.'
+            )
+            _up_col1, _up_col2 = st.columns([2, 1])
+            with _up_col1:
+                _uploaded = st.file_uploader(
+                    'Seleccionar archivo(s)',
+                    type=['txt', 'ipynb'],
+                    accept_multiple_files=True,
+                    key='oommf_uploader',
+                    help='fd = campo aplicado (mT) · mg = cantidad medida',
+                )
+            with _up_col2:
+                _up_mat = st.selectbox(
+                    'Material (opcional)',
+                    ['— auto —'] + list(MATERIALS_DB.keys()),
+                    format_func=lambda x: (
+                        '— inferir del archivo —' if x == '— auto —'
+                        else f"{MATERIALS_DB[x]['emoji']} {MATERIALS_DB[x]['name']}"
+                    ),
+                    key='up_mat',
+                )
+                _up_d = st.number_input(
+                    'Diámetro partícula (nm)',
+                    min_value=1.0, max_value=200.0,
+                    value=42.0, step=1.0, key='up_d',
+                    help='Usado para registrar el punto de calibración ML',
+                )
+                _up_geom = st.selectbox(
+                    'Geometría',
+                    list(GEOMETRY_MODES.keys()),
+                    format_func=lambda g: GEOMETRY_MODES[g]['label'],
+                    key='up_geom',
+                )
+
+            if _uploaded:
+                _up_mat_id = None if _up_mat == '— auto —' else _up_mat
+                _ingest_results = []
+                for _uf in _uploaded:
+                    # Guardar temporalmente
+                    _tmp = f'/tmp/_oommf_upload_{_uf.name}'
+                    with open(_tmp, 'wb') as _fh:
+                        _fh.write(_uf.getbuffer())
+                    # Ingestar
+                    if _REAL_DATA_OK and _ref_data is not None:
+                        _r = _ref_data.ingest_file(
+                            src_path=_tmp,
+                            mat_id=_up_mat_id,
+                            d_nm=float(_up_d),
+                            geom_id=_up_geom,
+                        )
+                    else:
+                        import oommf_data_manager as _odm2
+                        _r = _odm2.ingest_uploaded_file(
+                            src_path=_tmp,
+                            data_dir=_dssum.get('data_dir'),
+                            mat_id=_up_mat_id,
+                            d_nm=float(_up_d),
+                            geom_id=_up_geom,
+                        )
+                    _ingest_results.append((_uf.name, _r))
+
+                    # Invalidar cache de energía real
+                    for _k in list(st.session_state.keys()):
+                        if _k.startswith('fig_energy_real'):
+                            del st.session_state[_k]
+
+                for _fname, _r in _ingest_results:
+                    if _r.get('status') == 'ok':
+                        dtype  = _r.get('dtype', '?')
+                        msg    = _r.get('message', '')
+                        hp     = _r.get('hyst_params', {})
+                        if hp:
+                            st.success(
+                                f'✅ **{_fname}** cargado · Tipo: `{dtype}` · '
+                                f'Hc = **{hp["Hc_mT"]:.1f} mT** · '
+                                f'Mr = **{hp["Mr_Ms"]:.4f}**'
+                            )
+                            if _r.get('calibration_saved'):
+                                st.info(
+                                    f'🎯 Punto de calibración guardado: '
+                                    f'{_up_d:.0f} nm · {_up_mat_id or "auto"} · '
+                                    f'{_up_geom}'
+                                )
+                        else:
+                            st.success(f'✅ **{_fname}** · Tipo: `{dtype}` · {msg}')
+                    else:
+                        st.error(f'❌ **{_fname}**: {_r.get("message","Error")}')
+
+        # ── Predicción con calibración OOMMF ─────────────────────────────────
+        with st.expander(
+            '🎯 Predicción ML con calibración de datos reales',
+            expanded=False,
+        ):
+            st.markdown(
+                'Combina el ensemble ML con puntos de calibración OOMMF reales '
+                'usando interpolación gaussiana en el espacio de parámetros.'
+            )
+            _pcal_mat = st.selectbox(
+                'Material',
+                list(MATERIALS_DB.keys()),
+                format_func=lambda m: (
+                    f"{MATERIALS_DB[m]['emoji']} {MATERIALS_DB[m]['name']}"
+                ),
+                key='pcal_mat',
+            )
+            _pcal_d   = st.slider('Diámetro (nm)', 5, 100, 42, key='pcal_d')
+            _pcal_g   = st.selectbox(
+                'Geometría', list(GEOMETRY_MODES.keys()),
+                format_func=lambda g: GEOMETRY_MODES[g]['label'],
+                key='pcal_geom',
+            )
+
+            _Hc_cal, _Mr_cal, _cal_on = MODELS.predict_with_calibration(
+                d_nm   = float(_pcal_d),
+                mat_id = _pcal_mat,
+                geom_id = _pcal_g,
+                geom_factor_hc = GEOMETRY_MODES[_pcal_g]['factor_hc'],
+                geom_factor_mr = GEOMETRY_MODES[_pcal_g]['factor_mr'],
+                T = float(st.session_state.get('T_sim', 300)),
+            )
+            _Hc_base, _Mr_base = MODELS.predict_fast(
+                float(_pcal_d), _pcal_mat,
+                GEOMETRY_MODES[_pcal_g]['factor_hc'],
+                GEOMETRY_MODES[_pcal_g]['factor_mr'],
+                T=float(st.session_state.get('T_sim', 300)),
+            )
+            _pc1, _pc2, _pc3, _pc4 = st.columns(4)
+            _pc1.metric('Hc ML puro (mT)',       f'{_Hc_base:.1f}')
+            _pc2.metric('Mr ML puro',             f'{_Mr_base:.3f}')
+            _pc3.metric(
+                'Hc calibrado (mT)', f'{_Hc_cal:.1f}',
+                delta=f'{_Hc_cal-_Hc_base:+.1f}' if _cal_on else None,
+            )
+            _pc4.metric(
+                'Mr calibrado', f'{_Mr_cal:.3f}',
+                delta=f'{_Mr_cal-_Mr_base:+.3f}' if _cal_on else None,
+            )
+            if _cal_on:
+                st.success(
+                    '🎯 Calibración OOMMF activa — predicción ajustada con '
+                    'datos reales cercanos en el espacio de parámetros.'
+                )
+            else:
+                st.caption(
+                    'Sin calibración activa para este (material, diámetro, geometría). '
+                    'Sube datos de histéresis OOMMF para activarla.'
+                )

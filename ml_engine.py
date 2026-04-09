@@ -797,6 +797,13 @@ class MicromagneticMLEngine:
             f"  T_sim      : {self.T_sim} K",
             f"  Feedback   : {self.total_feedback} puntos acumulados",
         ]
+        # Calibración OOMMF
+        try:
+            import oommf_data_manager as _odm
+            cal = _odm.load_calibration_db()
+            lines.append(f"  Cal. OOMMF : {len(cal)} puntos reales")
+        except Exception:
+            pass
         for mid, m in self._metrics.items():
             name = self.mdb[mid]['name']
             r2   = np.mean(list(m['r2_cv_hc'].values()))
@@ -804,3 +811,42 @@ class MicromagneticMLEngine:
                 f"  {name:<30} n={m['n_train']:4d}  R²_avg={r2:.3f}"
             )
         return "\n".join(lines)
+
+    def predict_with_calibration(
+        self,
+        d_nm: float,
+        mat_id: str,
+        geom_id: str = 'sphere',
+        geom_factor_hc: float = 1.0,
+        geom_factor_mr: float = 1.0,
+        T: Optional[float] = None,
+        sigma_nm: float = 5.0,
+    ) -> tuple[float, float, bool]:
+        """
+        Predicción con corrección Gaussiana de datos OOMMF reales.
+
+        Si existen puntos de calibración para (mat_id, geom_id) cercanos a
+        d_nm, mezcla la predicción ML con los valores reales ponderados por
+        distancia gaussiana (sigma=sigma_nm).
+
+        Returns
+        -------
+        (Hc_mT, Mr_Ms, calibration_applied)
+        """
+        Hc_ml, Mr_ml = self.predict_fast(
+            d_nm, mat_id, geom_factor_hc, geom_factor_mr, T)
+
+        try:
+            import oommf_data_manager as _odm
+            Hc_corr, Mr_corr = _odm.calibration_correction(
+                mat_id=mat_id,
+                d_nm=d_nm,
+                geom_id=geom_id,
+                Hc_pred=Hc_ml,
+                Mr_pred=Mr_ml,
+                sigma_nm=sigma_nm,
+            )
+            cal_applied = (Hc_corr != Hc_ml or Mr_corr != Mr_ml)
+            return Hc_corr, Mr_corr, cal_applied
+        except Exception:
+            return Hc_ml, Mr_ml, False
