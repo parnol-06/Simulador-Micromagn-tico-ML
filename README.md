@@ -1,17 +1,31 @@
 # Simulador Micromagnético con Machine Learning (Streamlit)
 
-Simulador interactivo para **nanopartículas magnéticas** que combina:
+> Dashboard científico interactivo para explorar **nanopartículas magnéticas** con predicción ML,
+> histéresis, temperatura, geometrías y visualizaciones 3D.
 
-- **Predicción por Machine Learning** (ensemble) de propiedades del lazo de histéresis
+## Descripción
+
+Este proyecto combina:
+
+- **Predicción por Machine Learning (ensemble)** de propiedades del lazo de histéresis
   - **Hc** (campo coercitivo, mT)
   - **Mr/Ms** (remanencia normalizada)
-- **Generación de lazo de histéresis** (modelo analítico tipo LLG simplificado) y visualizaciones 2D/3D.
+- **Generación del lazo de histéresis** (modelo analítico tipo LLG simplificado) + visualizaciones 2D/3D.
 - **Geometrías** con factores de forma (Nd) validados / derivados de referencias clásicas.
-- **Temperatura** (entrada en °C o K) con adaptación térmica y apagado al acercarse a **Tc**.
+- **Temperatura** (entrada en **°C** o **K**) con adaptación térmica y apagado al acercarse a **Tc**.
 - **Aprendizaje online (feedback)**: cada simulación agrega puntos al motor ML y es posible reentrenar.
 - **Importación de energías** desde archivos `.txt` (Zeeman, intercambio, dipolar, anisotropía) para
   graficar y para extraer Hc/Mr y **entrenar** el motor ML mediante feedback.
 - Persistencia de historial en **SQLite** y exportación de reportes (PDF/CSV).
+
+---
+
+## Vista rápida
+
+- UI: **Streamlit**
+- Backend: **Python + NumPy + scikit-learn**
+- Persistencia: **SQLite**
+- 3D: **Plotly**
 
 ---
 
@@ -28,6 +42,17 @@ Simulador interactivo para **nanopartículas magnéticas** que combina:
 ---
 
 ## Tecnologías / librerías usadas
+
+| Categoría | Herramientas |
+|---|---|
+| UI | Streamlit |
+| ML | scikit-learn (GBR, RF, MLP) |
+| Cálculo / datos | NumPy, Pandas |
+| Gráficas 2D | Matplotlib |
+| 3D interactivo | Plotly |
+| Persistencia | SQLite |
+| Reportes | ReportLab |
+| Micromagnetismo (opcional) | Ubermag / oommfc / OOMMF |
 
 - **Python 3.10+ / 3.11**
 - **Streamlit** (UI)
@@ -80,6 +105,32 @@ Uso:
 
 ## Despliegue / ejecución
 
+### Opción recomendada (Docker Compose)
+
+1. Construir y levantar el servicio:
+
+```bash
+docker compose up --build
+```
+
+2. Abrir en el navegador:
+
+- http://localhost:8501
+
+> Si necesitas ejecución en segundo plano:
+>
+> ```bash
+> docker compose up --build -d
+> ```
+>
+> Para detener:
+>
+> ```bash
+> docker compose down
+> ```
+
+---
+
 ### A) Ejecutar localmente (recomendado para desarrollo)
 
 1. Crear entorno e instalar dependencias:
@@ -106,7 +157,7 @@ streamlit run app.py
 
 > Nota: el historial SQLite se guarda por defecto en `./data/simulations.db`.
 
-### B) Ejecutar con Docker
+### B) Ejecutar con Docker (sin Compose)
 
 1. Construir imagen:
 
