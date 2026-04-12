@@ -1903,57 +1903,33 @@ with tab_3d:
                     _fig_real.add_vline(x=-_Hc_r, line_dash='dot',
                         line_color='#f43f5e', line_width=1.5, row=1, col=1)
 
-                    # Panel 2: Anisotropía
-                    _ean = _energ['anisotropia']
-                    _fig_real.add_trace(go.Scatter(
-                        x=_ean['fd_desc'], y=_ean['mg_desc'],
-                        mode='lines+markers', name='E_anis ↓', marker_size=4,
-                        line=dict(color=_clr_desc, width=2), showlegend=False,
-                    ), row=1, col=2)
-                    _fig_real.add_trace(go.Scatter(
-                        x=_ean['fd_asc'], y=_ean['mg_asc'],
-                        mode='lines+markers', name='E_anis ↑', marker_size=4,
-                        line=dict(color=_clr_asc, width=2), showlegend=False,
-                    ), row=1, col=2)
+                    # Helper para agregar un panel de energía de forma segura
+                    def _add_energy_panel(key, row, col, label):
+                        _e = _energ.get(key)
+                        if _e is None:
+                            return   # archivo de energía no cargado — omitir panel
+                        _fig_real.add_trace(go.Scatter(
+                            x=_e['fd_desc'], y=_e['mg_desc'],
+                            mode='lines+markers', name=f'{label} ↓', marker_size=4,
+                            line=dict(color=_clr_desc, width=2), showlegend=False,
+                        ), row=row, col=col)
+                        _fig_real.add_trace(go.Scatter(
+                            x=_e['fd_asc'], y=_e['mg_asc'],
+                            mode='lines+markers', name=f'{label} ↑', marker_size=4,
+                            line=dict(color=_clr_asc, width=2), showlegend=False,
+                        ), row=row, col=col)
 
-                    # Panel 3: Zeeman
-                    _ez = _energ['zeeman']
-                    _fig_real.add_trace(go.Scatter(
-                        x=_ez['fd_desc'], y=_ez['mg_desc'],
-                        mode='lines+markers', name='E_Z ↓', marker_size=4,
-                        line=dict(color=_clr_desc, width=2), showlegend=False,
-                    ), row=2, col=1)
-                    _fig_real.add_trace(go.Scatter(
-                        x=_ez['fd_asc'], y=_ez['mg_asc'],
-                        mode='lines+markers', name='E_Z ↑', marker_size=4,
-                        line=dict(color=_clr_asc, width=2), showlegend=False,
-                    ), row=2, col=1)
+                    # Panel 2: Anisotropía  (dtype = 'anisotropy')
+                    _add_energy_panel('anisotropy', row=1, col=2, label='E_anis')
 
-                    # Panel 4: Dipolar
-                    _ed = _energ['dipolar']
-                    _fig_real.add_trace(go.Scatter(
-                        x=_ed['fd_desc'], y=_ed['mg_desc'],
-                        mode='lines+markers', name='E_dip ↓', marker_size=4,
-                        line=dict(color=_clr_desc, width=2), showlegend=False,
-                    ), row=2, col=2)
-                    _fig_real.add_trace(go.Scatter(
-                        x=_ed['fd_asc'], y=_ed['mg_asc'],
-                        mode='lines+markers', name='E_dip ↑', marker_size=4,
-                        line=dict(color=_clr_asc, width=2), showlegend=False,
-                    ), row=2, col=2)
+                    # Panel 3: Zeeman  (dtype = 'zeeman')
+                    _add_energy_panel('zeeman', row=2, col=1, label='E_Z')
 
-                    # Panel 5: Intercambio
-                    _ex = _energ['intercambio']
-                    _fig_real.add_trace(go.Scatter(
-                        x=_ex['fd_desc'], y=_ex['mg_desc'],
-                        mode='lines+markers', name='E_ex ↓', marker_size=4,
-                        line=dict(color=_clr_desc, width=2), showlegend=False,
-                    ), row=3, col=1)
-                    _fig_real.add_trace(go.Scatter(
-                        x=_ex['fd_asc'], y=_ex['mg_asc'],
-                        mode='lines+markers', name='E_ex ↑', marker_size=4,
-                        line=dict(color=_clr_asc, width=2), showlegend=False,
-                    ), row=3, col=1)
+                    # Panel 4: Dipolar  (dtype = 'dipolar')
+                    _add_energy_panel('dipolar', row=2, col=2, label='E_dip')
+
+                    # Panel 5: Intercambio  (dtype = 'exchange')
+                    _add_energy_panel('exchange', row=3, col=1, label='E_ex')
 
                     # Layout global
                     _fig_real.update_layout(
