@@ -224,7 +224,7 @@ Carpetas clave:
 
 ## Créditos y Copyright
 
-Copyright (c) 2026 **Arnol Ferney Pérez** – **Jesus Andres Cabezas**.
+Copyright (c) 2026 **Arnol Ferney Pérez** – **Jesus Andres Cabezas**. Fundacion universitaria los libertadores
 
 ---
 
