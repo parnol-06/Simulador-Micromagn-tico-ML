@@ -220,14 +220,6 @@ Carpetas clave:
 - `outputs/`: exportaciones (PNG/CSV/PDF).
 - `docs/`: documentación del proyecto.
 
----
-
-## Créditos y Copyright
-
-Copyright (c) 2026 **Arnol Ferney Pérez** – **Jesus Andres Cabezas**. Fundacion universitaria los libertadores
-
----
-
 ## Referencias y posibles fuentes de inspiración
 
 Este proyecto integra conceptos y herramientas ampliamente usadas en micromagnetismo y ML.
@@ -261,3 +253,12 @@ Algunas secciones están basadas o inspiradas en documentación pública y refer
   diseñadas para conservar tendencias físicas y permitir calibración incremental mediante feedback.
 - Si tienes datasets experimentales/simulados adicionales (por tamaño, temperatura, geometría),
   pueden incorporarse como feedback y/o ampliarse como datos base de entrenamiento.
+
+---
+
+## Créditos y Copyright
+
+Copyright (c) 2026 **Arnol Ferney Pérez** – **Jesus Andres Cabezas**. 
+Fundacion universitaria los libertadores
+
+---

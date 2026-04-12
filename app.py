@@ -997,7 +997,7 @@ with st.spinner('⚙️ Entrenando modelos GBR para los 8 materiales…'):
 # ═══════════════════════════════════════════════════════════════════════════════
 with st.sidebar:
     st.markdown('## Simulador Micromagnético ML')
-    st.caption('© 2026 · Version 1.1 de Arnol')
+    st.caption('© 2026 · Version 1.1 de Arnol Pérez y Jesus Cabezas')
     st.divider()
 
     # ── Material ─────────────────────────────────────────────────────────────
