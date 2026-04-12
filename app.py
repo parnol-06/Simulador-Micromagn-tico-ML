@@ -43,8 +43,7 @@ warnings.filterwarnings('ignore')
 #  CONFIGURACIÓN DE PÁGINA
 # ═══════════════════════════════════════════════════════════════════════════════
 st.set_page_config(
-    page_title="Simulador Micromagnético ML - Opcion de Grado",
-    page_icon="🔬",
+    page_title="Simulador Micromagnético ML — Opción de Grado",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -997,12 +996,12 @@ with st.spinner('⚙️ Entrenando modelos GBR para los 8 materiales…'):
 #  BARRA LATERAL — CONTROLES COMPLETOS
 # ═══════════════════════════════════════════════════════════════════════════════
 with st.sidebar:
-    st.markdown('## 🔬 Simulador\nMicromagnético ML')
+    st.markdown('## Simulador Micromagnético ML')
     st.caption('© 2026 · Version 1.1 de Arnol')
     st.divider()
 
     # ── Material ─────────────────────────────────────────────────────────────
-    st.markdown('### 🧲 Material')
+    st.markdown('### Material')
     mat_id = st.selectbox(
         'Material',
         list(MATERIALS_DB.keys()),
@@ -1034,7 +1033,7 @@ with st.sidebar:
     st.divider()
 
     # ── Geometría ─────────────────────────────────────────────────────────────
-    st.markdown('### 📐 Geometría')
+    st.markdown('### Geometría')
     geom_id = st.selectbox(
         'Geometría',
         list(GEOMETRY_MODES.keys()),
@@ -1051,7 +1050,7 @@ with st.sidebar:
     st.divider()
 
     # ── Tamaño ────────────────────────────────────────────────────────────────
-    st.markdown('### 📏 Tamaño de partícula (nm)')
+    st.markdown('### Tamaño de partícula (nm)')
     d_nm = st.slider(
         'Tamaño',
         min_value=max(2, lo - 15), max_value=hi + 15,
@@ -1060,12 +1059,12 @@ with st.sidebar:
     )
     st.session_state.d_nm = d_nm
     if is_extrapolation(d_nm, mat_id):
-        st.warning(f'⚠️ Extrapolación — fuera de [{lo}–{hi} nm]')
+        st.warning(f'Extrapolación: fuera de [{lo}–{hi} nm]')
 
     st.divider()
 
     # ── Temperatura ─────────────────────────────────────────────────────────
-    st.markdown('### 🌡 Temperatura')
+    st.markdown('### Temperatura')
 
     def _on_temp_unit_change():
         unit = st.session_state.sb_temp_unit
@@ -1130,12 +1129,12 @@ with st.sidebar:
         f'Ms(T)/Ms(0) ≈ {_ms_r:.3f}'
     )
     if _T_K >= _Tc:
-        st.warning('⚠️ T ≥ Tc: el material pierde ferromagnetismo (Hc≈0, Mr≈0).')
+        st.warning('T ≥ Tc: el material pierde ferromagnetismo (Hc≈0, Mr≈0).')
 
     st.divider()
 
     # ── Importar energías (TXT) ─────────────────────────────────────────────
-    with st.expander('⚡ Importar energías desde .txt (opcional)', expanded=False):
+    with st.expander('Importar energías desde .txt (opcional)', expanded=False):
         st.caption(
             'Sube archivos .txt con dos columnas: **fd** (campo, mT) y **mg** (energía). '
             'Se aceptan tab/espacios y encabezado opcional.'
@@ -1260,7 +1259,7 @@ with st.sidebar:
     st.divider()
 
     # ── Comparación ──────────────────────────────────────────────────────────
-    st.markdown('### 🔄 Comparar')
+    st.markdown('### Comparar')
     compare_enabled = st.toggle('Activar overlay')
     compare_mat, compare_geom = None, None
     if compare_enabled:
@@ -1289,9 +1288,9 @@ with st.sidebar:
     st.divider()
 
     # ── Botones ───────────────────────────────────────────────────────────────
-    btn_sim     = st.button('▶ SIMULAR', use_container_width=True, type='primary')
-    btn_animate = st.button('🎬 Animar por tamaño', use_container_width=True)
-    btn_clear   = st.button('🗑 Limpiar historial', use_container_width=True)
+    btn_sim     = st.button('Simular', use_container_width=True, type='primary')
+    btn_animate = st.button('Animar por tamaño', use_container_width=True)
+    btn_clear   = st.button('Limpiar historial', use_container_width=True)
     if btn_clear:
         st.session_state.history = []
         _db.clear_simulations()
@@ -1310,9 +1309,9 @@ use_temp_correction = bool(st.session_state.use_temp_correction)
 # ── Header ────────────────────────────────────────────────────────────────────
 col_title, col_status = st.columns([3, 1])
 with col_title:
-    st.title('🔬 Simulador Micromagnético ML - Opcion Grado')
+    st.title('Simulador Micromagnético ML — Opción de Grado')
 with col_status:
-    status_text = '🟢 Simulación lista' if st.session_state.sim_done else '⚪ Sin simular'
+    status_text = 'Listo' if st.session_state.sim_done else 'Sin simular'
     st.markdown(f"""
 <div style='text-align:right;padding-top:1.2rem;font-size:0.8rem;color:#64748b;'>
   v4.0 · Fase 4 · Ensemble ML<br>{status_text}<br>
@@ -1375,8 +1374,7 @@ with st.container():
 #  FIGURA PRINCIPAL (calcula una vez)
 # ═══════════════════════════════════════════════════════════════════════════════
 if not st.session_state.sim_done:
-    st.info('👈 Configura el material, geometría y tamaño en la barra lateral, '
-            'luego presiona **▶ SIMULAR**.')
+    st.info('Configura el material, geometría y tamaño en la barra lateral y luego presiona **Simular**.')
     st.stop()
 
 t0 = time.perf_counter()
@@ -1399,7 +1397,7 @@ entry = {
     'Tamaño (nm)': d_nm,
     'T (K)': round(T_K, 2),
     'Hc (mT)': round(Hc_val, 1), 'Mr/Ms': round(Mr_val, 3),
-    'Extrapolación': '⚠️' if is_extrapolation(d_nm, mat_id) else '✓',
+    'Extrapolación': 'Sí' if is_extrapolation(d_nm, mat_id) else 'No',
 }
 _last_key = f'{mat_id}_{geom_id}_{d_nm}'
 if (not st.session_state.history or
@@ -1426,13 +1424,13 @@ if st.session_state.get('_last_db_key') != _last_key:
 # ═══════════════════════════════════════════════════════════════════════════════
 (tab_sim, tab_compare, tab_params,
  tab_3d, tab_dashboard, tab_export, tab_uval) = st.tabs([
-    '📊 Simulación',
-    '🔄 Comparar',
-    '📋 Parámetros ML',
-    '🌐 3D Interactivo',
-    '📈 Dashboard',
-    '💾 Exportar',
-    '🧲 Validación Ubermag',
+    'Simulación',
+    'Comparar',
+    'Parámetros ML',
+    '3D Interactivo',
+    'Dashboard',
+    'Exportar',
+    'Validación Ubermag',
 ])
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1456,7 +1454,8 @@ with tab_sim:
                         bbox_inches='tight', facecolor='#0f172a')
             plt.close(f_a); buf.seek(0)
             ph.image(buf, use_column_width=True,
-                     caption=f'🎬 {s} nm — {gm["name"]}')
+                     caption=f'{s} nm — {gm["name"]}')
+
             progress.progress((i + 1) / len(steps))
             time.sleep(0.10)
         progress.empty()
@@ -1465,9 +1464,9 @@ with tab_sim:
 
     st.divider()
     m1, m2, m3, m4, m5, m6 = st.columns(6)
-    m1.metric(f'{gm["emoji"]} Hc (mT)',       f'{Hc_val:.1f}')
+    m1.metric('Hc (mT)',                      f'{Hc_val:.1f}')
     m2.metric('Mr/Ms',                          f'{Mr_val:.3f}')
-    m3.metric('🌡 T (K)',                       f'{T_K:.1f}')
+    m3.metric('T (K)',                        f'{T_K:.1f}')
     m4.metric('Campo máximo (mT)',              mat['field_max'])
     m5.metric('Factor forma Hc',               f'×{gm["factor_hc"]}')
     m6.metric('⏱ Cómputo',                     f'{elapsed_ms:.0f} ms')
@@ -1555,10 +1554,10 @@ with tab_params:
 
     # ── Subtabs del panel ML ──────────────────────────────────────────────────
     ml_tab1, ml_tab2, ml_tab3, ml_tab4 = st.tabs([
-        '📊 Métricas del Ensemble',
-        '🔍 Importancia de Features',
-        '📈 Curvas con Incertidumbre',
-        '🔄 Aprendizaje Online',
+        'Métricas del Ensemble',
+        'Importancia de Features',
+        'Curvas con Incertidumbre',
+        'Aprendizaje Online',
     ])
 
     eng_metrics = MODELS.get_metrics(mat_id)
@@ -1638,7 +1637,7 @@ with tab_params:
         rows_sw = []
         for i, s in enumerate(sizes_sweep):
             row_s = {'Tamaño (nm)': s,
-                     'Extrapol.': '⚠️' if is_extrapolation(s, mat_id) else '✓'}
+                     'Extrapol.': 'Sí' if is_extrapolation(s, mat_id) else 'No'}
             for gid, gdata in GEOMETRY_MODES.items():
                 Hc_g = float(Hc_sw_base[i]) * GEOMETRY_MODES[gid]['factor_hc']
                 row_s[f'Hc {gdata["emoji"]}'] = round(Hc_g, 1)
@@ -1832,8 +1831,8 @@ with tab_params:
             with st.spinner('Reentrenando ensemble GBR + RF + MLP…'):
                 MODELS.retrain_with_feedback()
             st.success(
-                f'✅ Modelos reentrenados con {total_fb} puntos de feedback. '
-                f'Predicciones actualizadas automáticamente.'
+                f'Modelos reentrenados con {total_fb} puntos de feedback. '
+                f'Predicciones actualizadas.'
             )
             st.rerun()
 
