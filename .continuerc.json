@@ -1,0 +1,6 @@
+{
+  "rules": [
+    "Este es un simulador micromagnético con ML. Usa Python y Streamlit.",
+    "Los archivos principales son app.py, ml_engine.py, db.py y micromagnetic_simulator_v2.py"
+  ]
+}

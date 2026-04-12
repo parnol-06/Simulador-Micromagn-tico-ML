@@ -57,6 +57,7 @@ COPY db.py .
 COPY viz3d.py .
 COPY report.py .
 COPY ubermag_validator.py .
+COPY temperature_model.py .
 
 # Carpeta de configuración Streamlit
 COPY .streamlit/ .streamlit/

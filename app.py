@@ -15,6 +15,7 @@
 
 import io, json, time, warnings, os
 from datetime import datetime
+from typing import Any
 
 import matplotlib
 matplotlib.use('Agg')
@@ -29,6 +30,12 @@ import viz3d     as _viz3d
 import ubermag_validator as _uval
 import report    as _report
 from ml_engine import MicromagneticMLEngine
+from temperature_model import (
+    to_kelvin,
+    from_kelvin,
+    apply_temperature_to_hc_mr,
+    reduced_magnetization,
+)
 
 warnings.filterwarnings('ignore')
 
@@ -253,6 +260,23 @@ GEOMETRY_MODES: dict = {
     },
 }
 
+# En figuras matplotlib (tabla), muchos entornos no renderizan emojis.
+# Usamos glifos Unicode simples (compatibles con DejaVu Sans) como iconos.
+_GEOM_GLYPHS = {
+    'sphere':           '●',
+    'cuboid':           '■',
+    'cylinder_disk':    '▭',
+    'cylinder_rod':     '▮',
+    'ellipsoid_prolate':'◆',
+    'ellipsoid_oblate': '◇',
+    'torus':            '◎',
+    'core_shell':       '◉',
+}
+
+
+def geom_glyph(geom_id: str) -> str:
+    return _GEOM_GLYPHS.get(geom_id, '•')
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  MOTOR ML FASE 4 — Ensemble GBR + RF + MLP · Features físicas · Online
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -304,6 +328,390 @@ def predict_geom_with_uncertainty(d_nm: float, mat_id: str, geom_id: str,
 def is_extrapolation(d_nm: float, mat_id: str) -> bool:
     lo, hi = MATERIALS_DB[mat_id]['range']
     return d_nm < lo or d_nm > hi
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  TEMPERATURA — conversión y adaptación
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def adapt_to_temperature(
+    Hc_ref_mT: float,
+    Mr_ref: float,
+    *,
+    d_nm: float,
+    mat_id: str,
+    T_K: float,
+    use_temp_correction: bool = True,
+) -> tuple[float, float, float | None]:
+    """Adapta (Hc, Mr) a temperatura T.
+
+    - Si use_temp_correction=False: retorna los valores de referencia.
+    - Si T>=Tc: fuerza (0,0).
+
+    Returns
+    -------
+    (Hc_T, Mr_T, barrier)
+    """
+    if not use_temp_correction:
+        return float(Hc_ref_mT), float(Mr_ref), None
+
+    p = MATERIALS_DB[mat_id]['params']
+    Tc = float(p.get('Tc_K', 1.0))
+    if float(T_K) >= Tc:
+        return 0.0, 0.0, 0.0
+
+    Hc_T, Mr_T, barrier = apply_temperature_to_hc_mr(
+        Hc_ref_mT=float(Hc_ref_mT),
+        Mr_ref=float(Mr_ref),
+        d_nm=float(d_nm),
+        Ms_MA_m=float(p.get('Ms_MA_m', 0.0)),
+        Tc_K=Tc,
+        T_K=float(T_K),
+    )
+    return float(Hc_T), float(Mr_T), float(barrier)
+
+
+def predict_geom_temp(
+    d_nm: float,
+    mat_id: str,
+    geom_id: str,
+    engine: MicromagneticMLEngine,
+    *,
+    T_K: float,
+    use_temp_correction: bool = True,
+) -> tuple[float, float, float | None]:
+    """Predicción (Hc, Mr) con geometría + adaptación a T.
+
+    Importante: el engine está entrenado con una T de referencia (T_sim).
+    Para soportar exploración de temperatura en la app, se predice a T_sim
+    y luego se aplica una corrección físico-heurística.
+
+    Returns
+    -------
+    (Hc, Mr, barrier)
+    """
+    gm = GEOMETRY_MODES[geom_id]
+    Hc_ref, Mr_ref = engine.predict_fast(
+        d_nm,
+        mat_id,
+        geom_factor_hc=gm['factor_hc'],
+        geom_factor_mr=gm['factor_mr'],
+        T=engine.T_sim,
+    )
+    return adapt_to_temperature(
+        Hc_ref,
+        Mr_ref,
+        d_nm=d_nm,
+        mat_id=mat_id,
+        T_K=T_K,
+        use_temp_correction=use_temp_correction,
+    )
+
+
+def predict_geom_with_uncertainty_temp(
+    d_nm: float,
+    mat_id: str,
+    geom_id: str,
+    engine: MicromagneticMLEngine,
+    *,
+    T_K: float,
+    use_temp_correction: bool = True,
+) -> tuple[float, float, float, float, float | None]:
+    """Predicción ensemble + incertidumbre, adaptada a temperatura.
+
+    Returns
+    -------
+    (Hc, Mr, σHc, σMr, barrier)
+    """
+    gm = GEOMETRY_MODES[geom_id]
+
+    Hc_ref, Mr_ref, sHc_ref, sMr_ref = engine.predict(
+        d_nm,
+        mat_id,
+        geom_factor_hc=gm['factor_hc'],
+        geom_factor_mr=gm['factor_mr'],
+        T=engine.T_sim,
+    )
+
+    Hc_T, Mr_T, barrier = adapt_to_temperature(
+        Hc_ref,
+        Mr_ref,
+        d_nm=d_nm,
+        mat_id=mat_id,
+        T_K=T_K,
+        use_temp_correction=use_temp_correction,
+    )
+
+    # Escalado aproximado de incertidumbre
+    r_hc = (Hc_T / Hc_ref) if Hc_ref > 1e-9 else 0.0
+    r_mr = (Mr_T / Mr_ref) if Mr_ref > 1e-9 else 0.0
+
+    return (
+        float(Hc_T),
+        float(Mr_T),
+        float(max(sHc_ref, 0.0) * r_hc),
+        float(max(sMr_ref, 0.0) * r_mr),
+        barrier,
+    )
+
+
+def predict_batch_temp(
+    sizes_nm: np.ndarray,
+    mat_id: str,
+    engine: MicromagneticMLEngine,
+    *,
+    T_K: float,
+    use_temp_correction: bool = True,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Predicción vectorizada (Hc, Mr) adaptada a temperatura (base esfera).
+
+    Nota: esta función NO aplica factores de geometría. Se usa como "base"
+    y luego se escala por factor_hc/factor_mr.
+    """
+    sizes_nm = np.asarray(sizes_nm, dtype=float)
+    Hc_ref, Mr_ref = engine.predict_batch(sizes_nm, mat_id, T=engine.T_sim)
+
+    if not use_temp_correction:
+        return Hc_ref, Mr_ref
+
+    Hc_out = np.zeros_like(Hc_ref, dtype=float)
+    Mr_out = np.zeros_like(Mr_ref, dtype=float)
+    for i, d in enumerate(sizes_nm):
+        Hc_i, Mr_i, _ = adapt_to_temperature(
+            float(Hc_ref[i]),
+            float(Mr_ref[i]),
+            d_nm=float(d),
+            mat_id=mat_id,
+            T_K=T_K,
+            use_temp_correction=True,
+        )
+        Hc_out[i] = Hc_i
+        Mr_out[i] = Mr_i
+    return Hc_out, Mr_out
+
+
+def predict_all_models_sweep_temp(
+    mat_id: str,
+    engine: MicromagneticMLEngine,
+    *,
+    T_K: float,
+    use_temp_correction: bool = True,
+    n_pts: int = 50,
+) -> dict:
+    """Barrido tipo predict_all_models_sweep() con adaptación a temperatura."""
+    sweep = engine.predict_all_models_sweep(mat_id, n_pts=n_pts, T=engine.T_sim)
+
+    if not use_temp_correction:
+        return sweep
+
+    sizes = sweep['sizes']
+    out = {'sizes': sizes}
+
+    # Corregir cada serie (GBR/RF/MLP/Ensemble)
+    for key in list(engine.MODEL_NAMES) + ['Ensemble']:
+        Hc_arr = np.asarray(sweep[key]['Hc'], dtype=float)
+        Mr_arr = np.asarray(sweep[key]['Mr'], dtype=float)
+        Hc_T = np.zeros_like(Hc_arr)
+        Mr_T = np.zeros_like(Mr_arr)
+        for i, d in enumerate(sizes):
+            Hc_T[i], Mr_T[i], _ = adapt_to_temperature(
+                float(Hc_arr[i]),
+                float(Mr_arr[i]),
+                d_nm=float(d),
+                mat_id=mat_id,
+                T_K=T_K,
+                use_temp_correction=True,
+            )
+        out[key] = {'Hc': Hc_T, 'Mr': Mr_T}
+
+    # Incertidumbre: reescalar σ por el ratio de RF (aprox)
+    rf_Hc_ref = np.asarray(sweep['RF']['Hc'], dtype=float)
+    rf_Mr_ref = np.asarray(sweep['RF']['Mr'], dtype=float)
+    rf_Hc_T = np.asarray(out['RF']['Hc'], dtype=float)
+    rf_Mr_T = np.asarray(out['RF']['Mr'], dtype=float)
+    r_hc = np.divide(rf_Hc_T, rf_Hc_ref, out=np.zeros_like(rf_Hc_T), where=(rf_Hc_ref > 1e-9))
+    r_mr = np.divide(rf_Mr_T, rf_Mr_ref, out=np.zeros_like(rf_Mr_T), where=(rf_Mr_ref > 1e-9))
+
+    out['Hc_std'] = np.asarray(sweep['Hc_std'], dtype=float) * r_hc
+    out['Mr_std'] = np.asarray(sweep['Mr_std'], dtype=float) * r_mr
+
+    return out
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  IMPORTAR ENERGÍAS (TXT)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def parse_energy_txt(uploaded_file, *, keep_sequence: bool = False) -> pd.DataFrame:
+    """Parsea un .txt con 2 columnas: campo (mT) y energía.
+
+    Acepta separador por tab/espacios y encabezado opcional (ej: fd mg).
+
+    Parameters
+    ----------
+    keep_sequence:
+        - False (default): agrupa duplicados de H (ida/vuelta) y ordena para graficar E(H).
+        - True: conserva el orden original (útil para extraer histéresis vía dE/dH).
+
+    Returns
+    -------
+    DataFrame con columnas: H_mT, E
+    """
+    raw = uploaded_file.getvalue().decode('utf-8', errors='ignore')
+    sio = io.StringIO(raw)
+
+    # Intento: header automático
+    try:
+        df = pd.read_csv(sio, sep=r'\s+', engine='python')
+    except Exception:
+        sio.seek(0)
+        df = pd.read_csv(sio, sep=r'\s+', engine='python', header=None)
+
+    if df.shape[1] < 2:
+        raise ValueError('El archivo debe tener al menos 2 columnas: campo y energía')
+
+    df = df.iloc[:, :2].copy()
+    df.columns = ['H_mT', 'E']
+
+    df['H_mT'] = pd.to_numeric(df['H_mT'], errors='coerce')
+    df['E'] = pd.to_numeric(df['E'], errors='coerce')
+    df = df.dropna()
+
+    if not keep_sequence:
+        # Consolidar duplicados por H (típico ida/vuelta) y ordenar
+        df = df.groupby('H_mT', as_index=False)['E'].mean().sort_values('H_mT')
+
+    return df
+
+
+def normalize_energy_series(E: np.ndarray) -> np.ndarray:
+    """Normaliza una serie de energía para compararla visualmente."""
+    E = np.asarray(E, dtype=float)
+    den = float(np.max(np.abs(E))) if len(E) else 1.0
+    den = den if den > 0 else 1.0
+    return E / den
+
+
+def _interp_any_direction(x: np.ndarray, y: np.ndarray, x0: float) -> float:
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    if len(x) < 2:
+        return float(y[0]) if len(y) else 0.0
+    if x[0] > x[-1]:
+        x = x[::-1]
+        y = y[::-1]
+    return float(np.interp(float(x0), x, y))
+
+
+def _split_first_two_segments(H: np.ndarray) -> tuple[slice, slice] | tuple[slice, None]:
+    """Intenta separar un barrido en 2 ramas (bajada/subida) usando cambios de signo en dH."""
+    H = np.asarray(H, dtype=float)
+    if len(H) < 4:
+        return slice(0, len(H)), None
+
+    dH = np.diff(H)
+    s = np.sign(dH)
+    # rellenar ceros con el último signo no-cero
+    for i in range(1, len(s)):
+        if s[i] == 0:
+            s[i] = s[i - 1]
+    # si aún hay ceros al inicio, usar el primer no-cero
+    if len(s) and s[0] == 0:
+        nz = s[s != 0]
+        if len(nz):
+            s[0] = nz[0]
+
+    change_idx = np.where(s[1:] * s[:-1] < 0)[0]  # producto negativo => cambio de signo
+    if len(change_idx) == 0:
+        return slice(0, len(H)), None
+
+    cut = int(change_idx[0] + 1)  # +1 por diff
+    return slice(0, cut + 1), slice(cut + 1, len(H))
+
+
+def _zero_crossing(H: np.ndarray, M: np.ndarray) -> float | None:
+    """Devuelve el H donde M cruza 0 (interpolación lineal)."""
+    H = np.asarray(H, dtype=float)
+    M = np.asarray(M, dtype=float)
+    if len(H) < 2:
+        return None
+
+    s = np.sign(M)
+    s[s == 0] = 1.0
+    idx = np.where(s[1:] * s[:-1] < 0)[0]
+    if len(idx) == 0:
+        return None
+
+    candidates = []
+    for i in idx:
+        m0, m1 = M[i], M[i + 1]
+        h0, h1 = H[i], H[i + 1]
+        if abs(m1 - m0) < 1e-12:
+            continue
+        h_cross = h0 - m0 * (h1 - h0) / (m1 - m0)
+        candidates.append(float(h_cross))
+
+    if not candidates:
+        return None
+    return min(candidates, key=lambda v: abs(v))
+
+
+def estimate_hc_mr_from_energy_df(df_seq: pd.DataFrame) -> tuple[float, float, dict[str, Any]]:
+    """Estima (Hc, Mr) desde E(H) usando M ~ -dE/dH.
+
+    Recomendado: usar energía Zeeman (E_Z), donde dE/dH ∝ -M.
+
+    Returns
+    -------
+    (Hc_mT, Mr, info)
+    """
+    H = df_seq['H_mT'].to_numpy(dtype=float)
+    E = df_seq['E'].to_numpy(dtype=float)
+
+    sl1, sl2 = _split_first_two_segments(H)
+    H1, E1 = H[sl1], E[sl1]
+
+    # Derivadas por rama (más estable cerca del punto de retorno)
+    M1 = -np.gradient(E1, H1)
+    if sl2 is not None:
+        H2, E2 = H[sl2], E[sl2]
+        M2 = -np.gradient(E2, H2)
+        M_all = np.concatenate([M1, M2])
+        scale = float(np.max(np.abs(M_all))) if len(M_all) else 1.0
+        scale = scale if scale > 0 else 1.0
+        M1n = M1 / scale
+        M2n = M2 / scale
+    else:
+        scale = float(np.max(np.abs(M1))) if len(M1) else 1.0
+        scale = scale if scale > 0 else 1.0
+        M1n = M1 / scale
+        M2n = None
+        H2 = None
+
+    # Hc por cruces en cada rama
+    hc_vals = []
+    hc1 = _zero_crossing(H1, M1n)
+    if hc1 is not None:
+        hc_vals.append(abs(hc1))
+    hc2 = None
+    if sl2 is not None and M2n is not None and H2 is not None:
+        hc2 = _zero_crossing(H2, M2n)
+        if hc2 is not None:
+            hc_vals.append(abs(hc2))
+
+    Hc = float(np.mean(hc_vals)) if hc_vals else 0.0
+
+    # Mr: M(H=0) en la primera rama (típicamente la bajada desde saturación positiva)
+    Mr = abs(_interp_any_direction(H1, M1n, 0.0))
+
+    info = {
+        'Hc_branch_1': hc1,
+        'Hc_branch_2': hc2,
+        'scale': scale,
+        'n_points': int(len(H)),
+        'has_two_branches': sl2 is not None,
+    }
+    return Hc, float(np.clip(Mr, 0.0, 1.10)), info
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  SIMULACIÓN LLG + ENERGÍA
@@ -422,12 +830,19 @@ _DARK = {
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def build_main_figure(mat_id, d_nm, geom_id, models,
+                      T_K: float,
+                      use_temp_correction: bool,
+                      uploaded_energies: dict[str, pd.DataFrame] | None,
+                      use_uploaded_energies: bool,
                       noise_level=0.008, dpi=150,
                       compare_mat=None, compare_geom=None):
     mat   = MATERIALS_DB[mat_id]
     gm    = GEOMETRY_MODES[geom_id]
     H_max = mat['field_max']
-    Hc, Mr = predict_geom(d_nm, mat_id, geom_id, models)
+    Hc, Mr, _barrier = predict_geom_temp(
+        d_nm, mat_id, geom_id, models,
+        T_K=T_K, use_temp_correction=use_temp_correction,
+    )
 
     plt.rcParams.update(_DARK)
     fig = plt.figure(figsize=(14, 7), facecolor='#0f172a', dpi=dpi)
@@ -449,7 +864,10 @@ def build_main_figure(mat_id, d_nm, geom_id, models,
         c_mat   = MATERIALS_DB[compare_mat]
         c_lo, c_hi = c_mat['range']
         d_c     = min(max(d_nm, c_lo), c_hi)
-        Hc2, Mr2 = predict_geom(d_c, compare_mat, compare_geom, models)
+        Hc2, Mr2, _ = predict_geom_temp(
+            d_c, compare_mat, compare_geom, models,
+            T_K=T_K, use_temp_correction=use_temp_correction,
+        )
         c_H_max = c_mat['field_max']
         H2, M_up2, M_dn2 = llg_hysteresis(Hc2, Mr2, H_max=c_H_max,
                                             noise_level=noise_level, seed=42)
@@ -461,37 +879,74 @@ def build_main_figure(mat_id, d_nm, geom_id, models,
     ax_hyst.axvline(0, color='#475569', lw=0.5)
     ax_hyst.set_xlabel('Campo H (mT)'); ax_hyst.set_ylabel('M / Ms')
     ax_hyst.set_title(
-        f'Histéresis — {mat["name"]}  ·  {gm["emoji"]} {gm["name"]}  @  {d_nm:.0f} nm',
+        f'Histéresis — {mat["name"]}  ·  {geom_glyph(geom_id)} {gm["name"]}  @  {d_nm:.0f} nm  ·  T={T_K:.1f} K',
         fontsize=9, pad=6)
     ax_hyst.legend(fontsize=7, loc='lower right')
     ax_hyst.grid(True)
 
     # ── Paisaje de energía ─────────────────────────────────────────────────
-    en = energy_landscape(Hc, H_max=H_max)
+    # Por defecto: modelo analítico simple.
+    # Opcional: si el usuario sube archivos, se grafican esas energías.
     en_styles = [
         ('zeeman',   '#38bdf8', '-',  'Zeeman'),
         ('exchange', '#f472b6', '-',  'Intercambio'),
-        ('demag',    '#fbbf24', '--', 'Desmagnetización'),
+        ('demag',    '#fbbf24', '--', 'Dipolar/Desmag.'),
         ('aniso',    '#34d399', '-.', 'Anisotropía'),
     ]
-    for key, col, ls, lbl in en_styles:
-        ax_enrg.plot(en['H'], en[key], color=col, lw=1.5, ls=ls, label=lbl)
-    ax_enrg.set_xlabel('H (mT)'); ax_enrg.set_ylabel('E / E₀  (u.a.)')
-    ax_enrg.set_title('Paisaje de Energía', fontsize=9, pad=6)
-    ax_enrg.legend(fontsize=7); ax_enrg.grid(True)
+
+    uploaded_energies = uploaded_energies or {}
+    has_uploaded = bool(uploaded_energies) and bool(use_uploaded_energies)
+
+    if has_uploaded:
+        # Series subidas (normalizadas) + analítico tenue para lo faltante.
+        for key, col, ls, lbl in en_styles:
+            if key in uploaded_energies and not uploaded_energies[key].empty:
+                df_e = uploaded_energies[key]
+                ax_enrg.plot(
+                    df_e['H_mT'].values,
+                    normalize_energy_series(df_e['E'].values),
+                    color=col, lw=1.6, ls=ls,
+                    label=f'{lbl} (txt)',
+                )
+
+        en = energy_landscape(Hc, H_max=H_max)
+        for key, col, ls, lbl in en_styles:
+            if key not in uploaded_energies:
+                ax_enrg.plot(
+                    en['H'], en[key],
+                    color=col, lw=1.0, ls=':', alpha=0.55,
+                    label=f'{lbl} (analítico)',
+                )
+
+        ax_enrg.set_xlabel('H (mT)')
+        ax_enrg.set_ylabel('E normalizada  (E / max|E|)')
+        ax_enrg.set_title('Paisaje de Energía — importado + analítico', fontsize=9, pad=6)
+        ax_enrg.legend(fontsize=7)
+        ax_enrg.grid(True)
+    else:
+        en = energy_landscape(Hc, H_max=H_max)
+        for key, col, ls, lbl in en_styles:
+            ax_enrg.plot(en['H'], en[key], color=col, lw=1.5, ls=ls, label=lbl)
+        ax_enrg.set_xlabel('H (mT)'); ax_enrg.set_ylabel('E / E₀  (u.a.)')
+        ax_enrg.set_title('Paisaje de Energía', fontsize=9, pad=6)
+        ax_enrg.legend(fontsize=7); ax_enrg.grid(True)
 
     # ── Tabla comparativa geometrías ────────────────────────────────────────
     ax_table.axis('off')
     p   = mat['params']
     ext = '  ⚠' if is_extrapolation(d_nm, mat_id) else ''
-    headers = ['Geometría', 'Hc (mT)', 'Mr/Ms', 'f_Hc', 'f_Mr',
+    headers = ['Geometría', 'Hc (mT)', 'Mr/Ms', 'T (K)', 'f_Hc', 'f_Mr',
                'K₁ (kJ/m³)', 'A (pJ/m)', 'Ms (MA/m)', 'α', 'Tc (K)']
     rows = []
     for gid, gdata in GEOMETRY_MODES.items():
-        Hc_g, Mr_g = predict_geom(d_nm, mat_id, gid, models)
+        Hc_g, Mr_g, _ = predict_geom_temp(
+            d_nm, mat_id, gid, models,
+            T_K=T_K, use_temp_correction=use_temp_correction,
+        )
         rows.append([
-            f'{gdata["emoji"]} {gdata["name"]}' + (ext if gid == geom_id else ''),
+            f'{geom_glyph(gid)} {gdata["name"]}' + (ext if gid == geom_id else ''),
             f'{Hc_g:.1f}', f'{Mr_g:.3f}',
+            f'{T_K:.1f}',
             f'{gdata["factor_hc"]:.2f}', f'{gdata["factor_mr"]:.2f}',
             p['K1_kJ_m3'], p['A_pJ_m'], p['Ms_MA_m'], p['alpha'], p['Tc_K'],
         ])
@@ -501,9 +956,10 @@ def build_main_figure(mat_id, d_nm, geom_id, models,
     for (row, col), cell in tbl.get_celld().items():
         cell.set_facecolor('#1e293b' if row % 2 == 0 else '#0f172a')
         cell.set_edgecolor('#334155')
-        cell.set_text_props(color='#f1f5f9')
+        # DejaVu Sans soporta bien los glifos geométricos usados como iconos.
+        cell.set_text_props(color='#f1f5f9', fontfamily='DejaVu Sans')
     ax_table.set_title(
-        f'Comparativa de Geometrías  @  {d_nm:.0f} nm  |  {mat["name"]}',
+        f'Comparativa de Geometrías  @  {d_nm:.0f} nm  |  {mat["name"]}  |  T={T_K:.1f} K',
         fontsize=9, color='#f1f5f9', pad=5)
 
     fig.suptitle('Simulador Micromagnético ML  v3.1  —  Fase 3',
@@ -520,6 +976,12 @@ defaults = {
     'geom_id':       'sphere',
     'd_nm':          30,
     '_last_db_key':  '',
+    # Temperatura (canónica en Kelvin)
+    'temp_K':        300.0,
+    'temp_unit':     'K',
+    'use_temp_correction': True,
+    # Energías importadas
+    'use_uploaded_energies': False,
 }
 for k, v in defaults.items():
     if k not in st.session_state:
@@ -536,7 +998,7 @@ with st.spinner('⚙️ Entrenando modelos GBR para los 8 materiales…'):
 # ═══════════════════════════════════════════════════════════════════════════════
 with st.sidebar:
     st.markdown('## 🔬 Simulador\nMicromagnético ML')
-    st.caption('© 2026 SimuGOD. Todos los derechos reservados Jesus Cabezas - Arnol Pérez')
+    st.caption('© 2026 · Version 1.1 de Arnol')
     st.divider()
 
     # ── Material ─────────────────────────────────────────────────────────────
@@ -602,6 +1064,201 @@ with st.sidebar:
 
     st.divider()
 
+    # ── Temperatura ─────────────────────────────────────────────────────────
+    st.markdown('### 🌡 Temperatura')
+
+    def _on_temp_unit_change():
+        unit = st.session_state.sb_temp_unit
+        st.session_state.temp_unit = unit
+        st.session_state.sb_temp_value = float(from_kelvin(st.session_state.temp_K, unit))
+
+    def _on_temp_value_change():
+        st.session_state.temp_K = float(
+            to_kelvin(st.session_state.sb_temp_value, st.session_state.sb_temp_unit)
+        )
+
+    # Inicializar controles si no existen (para que el cambio de unidad conserve el valor físico)
+    if 'sb_temp_unit' not in st.session_state:
+        st.session_state.sb_temp_unit = st.session_state.get('temp_unit', 'K')
+    if 'sb_temp_value' not in st.session_state:
+        st.session_state.sb_temp_value = float(
+            from_kelvin(st.session_state.get('temp_K', 300.0), st.session_state.sb_temp_unit)
+        )
+
+    st.radio(
+        'Unidad', ['K', '°C'],
+        key='sb_temp_unit', horizontal=True,
+        label_visibility='collapsed',
+        on_change=_on_temp_unit_change,
+    )
+
+    if st.session_state.sb_temp_unit == 'K':
+        st.number_input(
+            'Temperatura',
+            min_value=1.0, max_value=2000.0,
+            step=1.0,
+            key='sb_temp_value',
+            on_change=_on_temp_value_change,
+            label_visibility='collapsed',
+        )
+    else:
+        st.number_input(
+            'Temperatura',
+            min_value=-273.15, max_value=2000.0,
+            step=1.0,
+            key='sb_temp_value',
+            on_change=_on_temp_value_change,
+            label_visibility='collapsed',
+        )
+
+    # Toggle de corrección térmica
+    use_temp_correction = st.toggle(
+        'Aplicar corrección térmica (SPM / Tc)',
+        value=bool(st.session_state.get('use_temp_correction', True)),
+        key='sb_temp_corr',
+        help='Aplica una corrección físico-heurística para capturar tendencias con T '
+             '(reducción de Hc/Mr, apagado cerca de Tc y superparamagnetismo).',
+    )
+    st.session_state.use_temp_correction = bool(use_temp_correction)
+
+    _T_K = float(st.session_state.temp_K)
+    _Tc  = float(mat['params'].get('Tc_K', 1.0))
+    _ms_r = reduced_magnetization(_T_K, _Tc)
+
+    st.caption(
+        f'T = {_T_K:.2f} K  ·  T/Tc = {min(_T_K / max(_Tc, 1.0), 9.99):.3f}  ·  '
+        f'Ms(T)/Ms(0) ≈ {_ms_r:.3f}'
+    )
+    if _T_K >= _Tc:
+        st.warning('⚠️ T ≥ Tc: el material pierde ferromagnetismo (Hc≈0, Mr≈0).')
+
+    st.divider()
+
+    # ── Importar energías (TXT) ─────────────────────────────────────────────
+    with st.expander('⚡ Importar energías desde .txt (opcional)', expanded=False):
+        st.caption(
+            'Sube archivos .txt con dos columnas: **fd** (campo, mT) y **mg** (energía). '
+            'Se aceptan tab/espacios y encabezado opcional.'
+        )
+
+        use_uploaded_energies = st.toggle(
+            'Usar energías importadas en el gráfico de energía',
+            value=bool(st.session_state.get('use_uploaded_energies', False)),
+            key='sb_use_uploaded_energies',
+        )
+        st.session_state.use_uploaded_energies = bool(use_uploaded_energies)
+
+        up_zeeman = st.file_uploader('Energía Zeeman (txt)', type=['txt'], key='up_e_zeeman')
+        up_exchange = st.file_uploader('Energía de intercambio (txt)', type=['txt'], key='up_e_exchange')
+        up_dipolar = st.file_uploader('Energía dipolar / desmagnetización (txt)', type=['txt'], key='up_e_dipolar')
+        up_aniso = st.file_uploader('Energía de anisotropía (txt)', type=['txt'], key='up_e_aniso')
+
+        uploaded_energies: dict[str, pd.DataFrame] = {}
+        parse_errors: list[str] = []
+        for key, f in [
+            ('zeeman', up_zeeman),
+            ('exchange', up_exchange),
+            ('demag', up_dipolar),
+            ('aniso', up_aniso),
+        ]:
+            if f is None:
+                continue
+            try:
+                # Para graficar: agrupar duplicados
+                uploaded_energies[key] = parse_energy_txt(f, keep_sequence=False)
+            except Exception as e:
+                parse_errors.append(f'[{key}] {e}')
+
+        # Además, parsear en modo secuencia (para extraer histéresis vía dE/dH)
+        uploaded_energies_seq: dict[str, pd.DataFrame] = {}
+        for key, f in [
+            ('zeeman', up_zeeman),
+            ('exchange', up_exchange),
+            ('demag', up_dipolar),
+            ('aniso', up_aniso),
+        ]:
+            if f is None:
+                continue
+            try:
+                uploaded_energies_seq[key] = parse_energy_txt(f, keep_sequence=True)
+            except Exception:
+                pass
+
+        st.session_state['uploaded_energies'] = uploaded_energies
+        st.session_state['uploaded_energies_seq'] = uploaded_energies_seq
+
+        if parse_errors:
+            st.warning('No se pudieron parsear algunos archivos:')
+            for msg in parse_errors:
+                st.caption(f'• {msg}')
+
+        if uploaded_energies:
+            st.markdown('**Vista previa (primeras filas):**')
+            cols_prev = st.columns(min(4, len(uploaded_energies)))
+            for i, (k, df_e) in enumerate(uploaded_energies.items()):
+                cols_prev[i % len(cols_prev)].dataframe(df_e.head(8), use_container_width=True)
+
+        # ── Entrenamiento (feedback) desde energías ─────────────────────────
+        st.divider()
+        st.markdown('**Entrenar modelos con estos archivos (feedback)**')
+        st.caption(
+            'Se estima M(H) a partir de la energía **Zeeman** vía M ∝ -dE/dH. '
+            'Con eso se estima Hc (cruce por cero) y Mr (M en H=0), y se añade como '
+            'punto de feedback (alto peso) al motor ML.'
+        )
+
+        retrain_now = st.checkbox('Reentrenar material ahora (usa feedback nuevo)', value=False,
+                                 key='cb_retrain_now_energy')
+
+        _dfz = st.session_state.get('uploaded_energies_seq', {}).get('zeeman', None)
+        _can_train = isinstance(_dfz, pd.DataFrame) and (not _dfz.empty)
+
+        btn_energy_feedback = st.button(
+            '➕ Añadir energías como feedback (extraer Hc/Mr)',
+            use_container_width=True,
+            disabled=not _can_train,
+            key='btn_add_energy_feedback',
+        )
+
+        if not _can_train:
+            st.info('Sube al menos el archivo **Energía Zeeman** para extraer Hc/Mr y entrenar.')
+
+        if btn_energy_feedback and _can_train:
+            dfz = _dfz
+            try:
+                hc_e, mr_e, info = estimate_hc_mr_from_energy_df(dfz)
+
+                # Convertir a base del engine (sin factor geométrico)
+                gm_local = GEOMETRY_MODES.get(st.session_state.geom_id, GEOMETRY_MODES['sphere'])
+                hc_base = float(hc_e) / float(gm_local['factor_hc'])
+                mr_base = float(mr_e) / float(gm_local['factor_mr'])
+
+                MODELS.add_feedback(
+                    st.session_state.mat_id,
+                    float(st.session_state.d_nm),
+                    float(hc_base),
+                    float(mr_base),
+                    T=float(st.session_state.temp_K),
+                )
+
+                st.success(
+                    f'Feedback agregado: Hc≈{hc_e:.1f} mT, Mr≈{mr_e:.3f} '
+                    f'(base: Hc={hc_base:.1f} mT, Mr={mr_base:.3f}).'
+                )
+                st.caption(f"Detalles: {info}")
+
+                if retrain_now:
+                    with st.spinner('Reentrenando modelos para este material…'):
+                        MODELS.retrain_with_feedback(st.session_state.mat_id)
+                    st.success('Modelos reentrenados con feedback de energías.')
+
+                st.rerun()
+
+            except Exception as e:
+                st.error(f'No se pudo estimar Hc/Mr desde el archivo: {e}')
+
+    st.divider()
+
     # ── Comparación ──────────────────────────────────────────────────────────
     st.markdown('### 🔄 Comparar')
     compare_enabled = st.toggle('Activar overlay')
@@ -641,6 +1298,10 @@ with st.sidebar:
         st.rerun()
     if btn_sim:
         st.session_state.sim_done = True
+
+# Variables globales de temperatura para toda la app
+T_K = float(st.session_state.temp_K)
+use_temp_correction = bool(st.session_state.use_temp_correction)
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  PANTALLA PRINCIPAL — HOME CARD  (Dashboard único)
@@ -688,8 +1349,10 @@ with st.container():
   <div style='color:#64748b;font-size:0.75rem;'>Rango ML: {lo}–{hi} nm</div>
 </div>""", unsafe_allow_html=True)
 
-    Hc_prev, Mr_prev, sHc_prev, sMr_prev = predict_geom_with_uncertainty(
-        d_nm, mat_id, geom_id, MODELS)
+    Hc_prev, Mr_prev, sHc_prev, sMr_prev, _ = predict_geom_with_uncertainty_temp(
+        d_nm, mat_id, geom_id, MODELS,
+        T_K=T_K, use_temp_correction=use_temp_correction,
+    )
     c4.markdown(f"""
 <div style='background:#1e293b;border:1px solid #334155;border-radius:10px;
      padding:14px;text-align:center;'>
@@ -719,6 +1382,10 @@ if not st.session_state.sim_done:
 t0 = time.perf_counter()
 fig_main, Hc_val, Mr_val = build_main_figure(
     mat_id, d_nm, geom_id, MODELS,
+    T_K=T_K,
+    use_temp_correction=use_temp_correction,
+    uploaded_energies=st.session_state.get('uploaded_energies', {}),
+    use_uploaded_energies=bool(st.session_state.get('use_uploaded_energies', False)),
     noise_level=noise_level, dpi=export_dpi,
     compare_mat=compare_mat if compare_enabled else None,
     compare_geom=compare_geom if compare_enabled else None,
@@ -730,6 +1397,7 @@ entry = {
     'Hora': datetime.now().strftime('%H:%M:%S'),
     'Material': mat['name'], 'Geometría': gm['name'],
     'Tamaño (nm)': d_nm,
+    'T (K)': round(T_K, 2),
     'Hc (mT)': round(Hc_val, 1), 'Mr/Ms': round(Mr_val, 3),
     'Extrapolación': '⚠️' if is_extrapolation(d_nm, mat_id) else '✓',
 }
@@ -750,7 +1418,7 @@ if st.session_state.get('_last_db_key') != _last_key:
         extrapolation=is_extrapolation(d_nm, mat_id),
     )
     # ── Fase 4: feedback online — cada simulación mejora el modelo ───────────
-    MODELS.add_feedback(mat_id, d_nm, Hc_val, Mr_val)
+    MODELS.add_feedback(mat_id, d_nm, Hc_val, Mr_val, T=T_K)
     st.session_state['_last_db_key'] = _last_key
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -775,8 +1443,14 @@ with tab_sim:
         steps = list(range(lo, hi + 1, max(1, (hi - lo) // 25)))
         ph    = st.empty(); progress = st.progress(0)
         for i, s in enumerate(steps):
-            f_a, _, _ = build_main_figure(mat_id, s, geom_id, MODELS,
-                                           noise_level=noise_level, dpi=100)
+            f_a, _, _ = build_main_figure(
+                mat_id, s, geom_id, MODELS,
+                T_K=T_K,
+                use_temp_correction=use_temp_correction,
+                uploaded_energies=st.session_state.get('uploaded_energies', {}),
+                use_uploaded_energies=bool(st.session_state.get('use_uploaded_energies', False)),
+                noise_level=noise_level, dpi=100,
+            )
             buf = io.BytesIO()
             f_a.savefig(buf, format='png', dpi=100,
                         bbox_inches='tight', facecolor='#0f172a')
@@ -790,12 +1464,13 @@ with tab_sim:
         st.pyplot(fig_main, use_container_width=True)
 
     st.divider()
-    m1, m2, m3, m4, m5 = st.columns(5)
+    m1, m2, m3, m4, m5, m6 = st.columns(6)
     m1.metric(f'{gm["emoji"]} Hc (mT)',       f'{Hc_val:.1f}')
     m2.metric('Mr/Ms',                          f'{Mr_val:.3f}')
-    m3.metric('Campo máximo (mT)',              mat['field_max'])
-    m4.metric('Factor forma Hc',               f'×{gm["factor_hc"]}')
-    m5.metric('⏱ Cómputo',                     f'{elapsed_ms:.0f} ms')
+    m3.metric('🌡 T (K)',                       f'{T_K:.1f}')
+    m4.metric('Campo máximo (mT)',              mat['field_max'])
+    m5.metric('Factor forma Hc',               f'×{gm["factor_hc"]}')
+    m6.metric('⏱ Cómputo',                     f'{elapsed_ms:.0f} ms')
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  TAB 2 — COMPARAR  (material + geometría)
@@ -829,7 +1504,10 @@ with tab_compare:
         gd   = GEOMETRY_MODES[sel_geom]
         lo_c, hi_c = m['range']
         d_c  = min(max(c_size, lo_c), hi_c)
-        Hc_c, Mr_c = predict_geom(d_c, sel_mat, sel_geom, MODELS)
+        Hc_c, Mr_c, _ = predict_geom_temp(
+            d_c, sel_mat, sel_geom, MODELS,
+            T_K=T_K, use_temp_correction=use_temp_correction,
+        )
         H, M_up, M_dn = llg_hysteresis(Hc_c, Mr_c, H_max=m['field_max'], seed=42)
         ax.plot(H, M_up, color=m['color'], lw=1.8,
                 label=f'{gd["name"]}  Hc={Hc_c:.0f} mT')
@@ -852,7 +1530,10 @@ with tab_compare:
         gd   = GEOMETRY_MODES[sel_geom]
         lo_c, hi_c = m['range']
         d_c  = min(max(c_size, lo_c), hi_c)
-        Hc_c, Mr_c = predict_geom(d_c, sel_mat, sel_geom, MODELS)
+        Hc_c, Mr_c, _ = predict_geom_temp(
+            d_c, sel_mat, sel_geom, MODELS,
+            T_K=T_K, use_temp_correction=use_temp_correction,
+        )
         H, M_up, M_dn = llg_hysteresis(Hc_c, Mr_c, H_max=m['field_max'], seed=42)
         H_norm = H / m['field_max']
         ax_ov.plot(H_norm, M_up, color=m['color'], lw=2.2,
@@ -950,7 +1631,10 @@ with tab_params:
             list(range(lo, hi + 1, max(1, (hi - lo) // 10))) + [hi]))
         sizes_sweep_arr = np.array(sizes_sweep, dtype=float)
         # 1 batch call → luego escalar por factor de geometría (antes 8×n calls)
-        Hc_sw_base, _ = MODELS.predict_batch(sizes_sweep_arr, mat_id)
+        Hc_sw_base, _ = predict_batch_temp(
+            sizes_sweep_arr, mat_id, MODELS,
+            T_K=T_K, use_temp_correction=use_temp_correction,
+        )
         rows_sw = []
         for i, s in enumerate(sizes_sweep):
             row_s = {'Tamaño (nm)': s,
@@ -1030,7 +1714,11 @@ with tab_params:
         )
 
         # Vectorizado: una pasada sklearn por modelo en lugar de 80 predict() en bucle
-        sweep_data = MODELS.predict_all_models_sweep(mat_id, n_pts=50)
+        sweep_data = predict_all_models_sweep_temp(
+            mat_id, MODELS,
+            T_K=T_K, use_temp_correction=use_temp_correction,
+            n_pts=50,
+        )
         sizes_full = sweep_data['sizes']
 
         plt.rcParams.update(_DARK)
@@ -1080,7 +1768,10 @@ with tab_params:
         sizes_geom = np.linspace(max(2, lo - 5), hi + 5,
                                  min(25, max(10, (hi - lo) // 4)))
         # 1 batch call para base Hc, luego escalar por factor de geometría
-        Hc_base_geom, _ = MODELS.predict_batch(sizes_geom, mat_id)
+        Hc_base_geom, _ = predict_batch_temp(
+            sizes_geom, mat_id, MODELS,
+            T_K=T_K, use_temp_correction=use_temp_correction,
+        )
         fig_hc, ax_hc = plt.subplots(figsize=(12, 4), facecolor='#0f172a')
         ax_hc.set_facecolor('#1e293b')
         geom_colors = ['#38bdf8','#fb923c','#34d399','#f472b6',
@@ -1184,7 +1875,13 @@ with tab_3d:
 
     # adaptar predict para viz3d — usa predict_fast (sin varianza RF → rápido)
     def _predict_for_viz(d, mid, geom_key, models):
-        return models.predict_fast(d, mid)
+        # geom_key llega como 'sphere'/'cuboid' en varias viz; lo mapeamos directo.
+        gid = geom_key if geom_key in GEOMETRY_MODES else 'sphere'
+        Hc_v, Mr_v, _ = predict_geom_temp(
+            float(d), str(mid), str(gid), models,
+            T_K=T_K, use_temp_correction=use_temp_correction,
+        )
+        return Hc_v, Mr_v
 
     # ── Helper: botones de exportación para figuras Plotly ────────────────────
     def _export_plotly(fig, fname_base):
@@ -1701,7 +2398,7 @@ with tab_uval:
             _sim_geom = st.selectbox(
                 'Geometría',
                 list(GEOMETRY_MODES.keys()),
-                format_func=lambda g: GEOMETRY_MODES[g]['label'],
+                format_func=lambda g: GEOMETRY_MODES[g].get('label', GEOMETRY_MODES[g]['name']),
                 key='oommf_geom',
             )
             _sim_mat = st.selectbox(
@@ -1766,6 +2463,8 @@ with tab_uval:
             _mc4.metric('Motor',             _res.get('runner', '—'))
 
             # ── Lazo de histéresis interactivo ────────────────────────────────
+            import plotly.graph_objects as go
+
             _H  = _res['H']
             _M  = _res['M']
             _nh = len(_H) // 2
@@ -1822,7 +2521,7 @@ with tab_uval:
             )
 
             _mat_name  = MATERIALS_DB[_sim_mat]['name']
-            _geom_name = GEOMETRY_MODES[_sim_geom]['label']
+            _geom_name = GEOMETRY_MODES[_sim_geom].get('label', GEOMETRY_MODES[_sim_geom]['name'])
             _fig_h.update_layout(
                 title=dict(
                     text=(f'Lazo de Histéresis — '
@@ -1849,10 +2548,9 @@ with tab_uval:
 
             # ── Comparación ML predicho vs. Simulado ─────────────────────────
             st.markdown('##### Comparación: ML predicho vs. Simulado')
-            _Hc_ml, _Mr_ml = MODELS.predict_fast(
-                float(_sim_d), _sim_mat,
-                geom_factor_hc=GEOMETRY_MODES[_sim_geom]['factor_hc'],
-                geom_factor_mr=GEOMETRY_MODES[_sim_geom]['factor_mr'],
+            _Hc_ml, _Mr_ml, _ = predict_geom_temp(
+                float(_sim_d), _sim_mat, _sim_geom, MODELS,
+                T_K=T_K, use_temp_correction=use_temp_correction,
             )
             _cmp_df = pd.DataFrame({
                 'Fuente':   ['Simulación (OOMMF/SW)', 'ML Ensemble (predicho)'],
