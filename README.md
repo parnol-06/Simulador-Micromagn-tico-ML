@@ -215,6 +215,25 @@ Estructura típica del repositorio (puede variar según el entorno):
 └── docs/                       # Documentación (PRD/SRS, etc.)
 ```
 
+## Materiales y geometrías soportados
+
+### Materiales
+
+| Material | Símbolo | K₁ (kJ/m³) | Ms (MA/m) | Tc (K) |
+|---|---|---|---|---|
+| Hierro | Fe 🔴 | 48 | 1.70 | 1044 |
+| Permalloy | Ni₈₀Fe₂₀ 🟣 | 0.1 | 0.86 | 843 |
+| Cobalto | Co 🟡 | 450 | 1.44 | 1388 |
+| Magnetita | Fe₃O₄ 🟢 | 11 | 0.48 | 858 |
+| Níquel | Ni ⚪ | -5.7 | 0.49 | 627 |
+| Cobaltita | CoFe₂O₄ 🔵 | 200 | 0.38 | 793 |
+| Ferrita de bario | BaFe₁₂O₁₉ 🟤 | 330 | 0.38 | 740 |
+| Maghemita | γ-Fe₂O₃ 🟠 | 11 | 0.40 | 820 |
+
+### Geometrías
+
+Esfera · Cuboide · Disco · Barra · Elipsoide prolato · Elipsoide oblato · Toroide · Núcleo-cáscara
+
 Carpetas clave:
 - `data/`: almacenamiento persistente (SQLite). Monta esta carpeta como volumen si usas Docker.
 - `outputs/`: exportaciones (PNG/CSV/PDF).
