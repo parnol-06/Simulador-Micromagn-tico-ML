@@ -138,11 +138,36 @@ docker run --rm -p 8501:8501 \
 
 ---
 
-## Estructura de carpetas
+## Estructura del proyecto
 
-- `data/` → base de datos SQLite (historial)
-- `outputs/` → figuras exportadas
-- `.streamlit/` → configuración UI
+Estructura típica del repositorio (puede variar según el entorno):
+
+```text
+.
+├── app.py                      # App principal Streamlit (UI + simulación)
+├── ml_engine.py                # Motor ML (ensemble + features + feedback)
+├── temperature_model.py        # Conversión °C/K + adaptación térmica
+├── viz3d.py                    # Visualizaciones Plotly 2D/3D
+├── ubermag_validator.py        # Validación geométrica / Nd / OOMMF (opcional)
+├── report.py                   # Generador de reportes PDF
+├── db.py                       # Persistencia SQLite
+├── micromagnetic_simulator_v2.py   # Script CLI (versión anterior / utilidades)
+├── requirements.txt            # Dependencias Python
+├── Dockerfile                  # Imagen Docker para despliegue
+├── docker-compose.yml          # (Opcional) Orquestación local
+├── run.sh                      # (Opcional) Script de arranque
+├── .streamlit/
+│   └── config.toml             # Configuración Streamlit
+├── data/
+│   └── simulations.db          # Historial SQLite (se crea/actualiza)
+├── outputs/                    # Figuras exportadas
+└── docs/                       # Documentación (PRD/SRS, etc.)
+```
+
+Carpetas clave:
+- `data/`: almacenamiento persistente (SQLite). Monta esta carpeta como volumen si usas Docker.
+- `outputs/`: exportaciones (PNG/CSV/PDF).
+- `docs/`: documentación del proyecto.
 
 ---
 
