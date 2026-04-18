@@ -164,7 +164,7 @@ def magnetization_vectors(
         opacity=0.18,
         showscale=False,
         hoverinfo='skip',
-        name='Esfera',
+        name='Sphere',
     ))
 
     # Conos (vectores M)
@@ -280,7 +280,7 @@ def hc_heatmap(
     fig.update_layout(
         **_LAYOUT_BASE,
         title=dict(
-            text=f'Mapa de Calor — Hc (mT) · Geometría: {"Esfera" if geom=="sphere" else "Cuboide"}',
+            text=f'Hc Heatmap (mT) — Geometry: {"Sphere" if geom=="sphere" else "Cuboid"}',
             font=dict(size=13, color=_TEXT),
         ),
         xaxis=dict(title='Tamaño (nm)', color=_SUBTEXT,
@@ -534,8 +534,8 @@ def voxel_geometry_3d(
     fig.update_layout(
         **_LAYOUT_BASE,
         title=dict(
-            text=(f'{gm["emoji"]}  {gm["name"]}  —  d = {d_nm:.0f} nm'
-                  '<br><sup>Vóxeles coloreados por mz (estado remanente)</sup>'),
+            text=(f'{gm["name"]}  —  d = {d_nm:.0f} nm'
+                  '<br><sup>Voxels colored by mz (remanent state)</sup>'),
             font=dict(size=13, color=_TEXT),
         ),
         scene=dict(

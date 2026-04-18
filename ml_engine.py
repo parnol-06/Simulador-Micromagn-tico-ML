@@ -1,39 +1,39 @@
 """
 =============================================================================
- ml_engine.py — Motor ML Fase 4 · Simulador Micromagnético
+ ml_engine.py — ML Engine Phase 4 · Micromagnetic ML Simulator
 =============================================================================
 
-Mejoras sobre Fase 3 (GBR single-feature):
+Improvements over Phase 3 (single-feature GBR):
 
-  1. Features físicamente motivados  (7 dimensiones por punto)
-     · d_nm            — diámetro de partícula (nm)
-     · d / λ_ex        — tamaño normalizado a longitud de intercambio
-     · log₁₀(d)        — captura relaciones de ley de potencias
-     · K₁V / k_BT      — barrera de anisotropía vs. energía térmica (indicador SPM)
-     · Ms (MA/m)        — magnetización de saturación
-     · α  (LLG)         — amortiguamiento (damping)
-     · T / Tc           — temperatura reducida
+  1. Physics-motivated features  (7 dimensions per point)
+     · d_nm            — particle diameter (nm)
+     · d / λ_ex        — size normalized to exchange length
+     · log₁₀(d)        — captures power-law relationships
+     · K₁V / k_BT      — anisotropy barrier vs. thermal energy (SPM indicator)
+     · Ms (MA/m)        — saturation magnetization
+     · α  (LLG)         — damping coefficient
+     · T / Tc           — reduced temperature
 
-  2. Ensemble de tres modelos  (promedio ponderado por R² de validación cruzada)
+  2. Three-model ensemble  (weighted average by cross-validation R²)
      · GBR  — GradientBoostingRegressor  (n=350, depth=4, lr=0.04, subsample=0.85)
      · RF   — RandomForestRegressor      (n=400, depth=10)
      · MLP  — MLPRegressor               (128 → 64 → 32, ReLU, Adam, early-stopping)
 
-  3. Aprendizaje online
-     · Cada simulación del usuario agrega un punto de feedback
-     · Botón "Reentrenar" incorpora los datos acumulados en el próximo entrenamiento
-     · Los puntos de feedback se ponderan ×N (datos empíricos > sintéticos)
+  3. Online learning
+     · Each user simulation adds a feedback point
+     · "Retrain" button incorporates accumulated data in the next training run
+     · Feedback points are weighted ×N (empirical data > synthetic)
 
-  4. Cuantificación de incertidumbre
-     · σ_Hc y σ_Mr estimados vía varianza entre árboles del RF
-     · Se muestran como bandas de confianza ±1σ en la histéresis
+  4. Uncertainty quantification
+     · σ_Hc and σ_Mr estimated via RF tree variance
+     · Displayed as ±1σ confidence bands on the hysteresis curve
 
-Uso:
+Usage:
     engine = MicromagneticMLEngine(MATERIALS_DB)
-    engine.train()          # entrena todos los materiales
+    engine.train()          # train all materials
     Hc, Mr, sHc, sMr = engine.predict(30.0, 'fe', geom_factor_hc=1.55)
     engine.add_feedback('fe', 30.0, Hc_measured=155.0, Mr_measured=0.70)
-    engine.retrain_with_feedback()   # incorpora feedback
+    engine.retrain_with_feedback()   # incorporate feedback
 =============================================================================
 """
 
@@ -58,8 +58,8 @@ _kB = 1.380649e-23   # J / K
 class MicromagneticMLEngine:
     """
     Motor de aprendizaje automático multi-modelo para predicción de
-    Hc (campo coercitivo, mT) y Mr/Ms (remanencia normalizada) en
-    nanopartículas magnéticas con aprendizaje online.
+    Hc (coercive field, mT) and Mr/Ms (normalized remanence) for
+    magnetic nanoparticles with online learning.
     """
 
     #: Nombres de los 7 features para gráficas de importancia
@@ -73,7 +73,7 @@ class MicromagneticMLEngine:
         'T / Tc',
     ]
 
-    #: Nombres de los tres modelos base
+    #: Names of the three base models
     MODEL_NAMES = ('GBR', 'RF', 'MLP')
 
     def __init__(
@@ -85,22 +85,22 @@ class MicromagneticMLEngine:
         Parameters
         ----------
         materials_db : dict
-            Diccionario MATERIALS_DB del simulador.
+            MATERIALS_DB dictionary from the simulator.
         T_sim : float
-            Temperatura de simulación por defecto (K).
+            Default simulation temperature (K).
         """
         self.mdb   = materials_db
         self.T_sim = T_sim
 
         # {mat_id: {'GBR': (m_hc, m_mr), 'RF': (m_hc, m_mr), 'MLP': (m_hc, m_mr)}}
-        self._models:  dict[str, dict] = {}
+        self._models:   dict[str, dict] = {}
         # {mat_id: StandardScaler}
-        self._scalers: dict[str, StandardScaler] = {}
+        self._scalers:  dict[str, StandardScaler] = {}
         # {mat_id: {'r2_cv_hc': {name: float}, 'r2_cv_mr': {name: float},
         #           'rmse_hc': {name: float}, 'rmse_mr': {name: float},
         #           'weights_hc': ndarray, 'weights_mr': ndarray,
         #           'n_train': int, 'n_feedback': int}}
-        self._metrics: dict[str, dict] = {}
+        self._metrics:  dict[str, dict] = {}
         # {mat_id: list of [*features(7), Hc, Mr]}
         self._feedback: dict[str, list] = {mid: [] for mid in materials_db}
 
@@ -137,7 +137,7 @@ class MicromagneticMLEngine:
         V   = (4.0 / 3.0) * np.pi * r_m ** 3   # m³
 
         return np.array([
-            d_nm,                                    # 0: tamaño
+            d_nm,                                    # 0: size
             d_nm / lam,                              # 1: d / λ_ex  (adimensional)
             np.log10(max(d_nm, 0.1)),                # 2: escala log
             (K1 * V) / (_kB * max(T, 1.0)),          # 3: KuV/kBT
@@ -153,13 +153,39 @@ class MicromagneticMLEngine:
         T: Optional[float] = None,
     ) -> np.ndarray:
         """
-        Calcula la matriz de features para un array de tamaños.
+        Compute the feature matrix for an array of particle sizes.
+
+        Vectorized implementation — avoids a Python loop over individual sizes
+        by computing all 7 features as broadcast NumPy operations.
 
         Returns
         -------
         np.ndarray  shape (N, 7)
         """
-        return np.array([self.features(d, mat_id, T) for d in sizes])
+        sizes = np.asarray(sizes, dtype=float)
+        T = T or self.T_sim
+        p = self.mdb[mat_id]['params']
+
+        K1    = abs(p['K1_kJ_m3']) * 1e3    # J/m³
+        Ms    = p['Ms_MA_m']                  # MA/m
+        lam   = max(p['lambda_ex_nm'], 1e-9)  # nm
+        Tc    = max(p['Tc_K'], 1.0)           # K
+        alpha = p['alpha']
+        T_val = max(float(T), 1.0)
+
+        r_m = (sizes * 1e-9) / 2.0             # (N,)
+        V   = (4.0 / 3.0) * np.pi * r_m ** 3  # (N,)
+
+        X = np.column_stack([
+            sizes,                                        # 0: size (nm)
+            sizes / lam,                                  # 1: d / λ_ex
+            np.log10(np.maximum(sizes, 0.1)),             # 2: log10(d)
+            (K1 * V) / (_kB * T_val),                    # 3: K1V/kBT
+            np.full(len(sizes), Ms),                      # 4: Ms (MA/m)
+            np.full(len(sizes), alpha),                   # 5: α (LLG)
+            np.full(len(sizes), T_val / Tc),              # 6: T/Tc
+        ])
+        return X
 
     # ═══════════════════════════════════════════════════════════════════════════
     #  GENERACIÓN DE DATOS DE ENTRENAMIENTO
@@ -173,17 +199,17 @@ class MicromagneticMLEngine:
         """
         Construye el dataset de entrenamiento para un material.
 
-        Estrategia:
-          1. Puntos âncora de 'sphere' en MATERIALS_DB (×15 para prioridad)
-          2. Interpolación lineal densa entre los âncoras (n_aug puntos)
-          3. Puntos aleatorios con ruido físico (n_aug/3 puntos)
-          4. Extrapolación suave en los extremos (±30 % del rango)
-          5. Feedback del usuario (×20 para máxima prioridad)
+        Strategy:
+          1. Anchor points from 'sphere' in MATERIALS_DB (×15 for priority)
+          2. Dense linear interpolation between anchors (n_aug points)
+          3. Random points with physical noise (n_aug/3 points)
+          4. Smooth extrapolation at the extremes (±30% of range)
+          5. User feedback (×20 for maximum priority)
 
         Returns
         -------
         sizes : ndarray  (N,)
-        Hc    : ndarray  (N,)   campo coercitivo en mT
+        Hc    : ndarray  (N,)   coercive field [mT]
         Mr    : ndarray  (N,)   Mr/Ms
         """
         mat = self.mdb[mat_id]
@@ -195,42 +221,42 @@ class MicromagneticMLEngine:
         Hc_orig = orig[:, 1]
         Mr_orig = orig[:, 2]
 
-        # ── Interpolación densa dentro del rango entrenado ────────────────────
+        # ── Dense interpolation within the training range ────────────────────
         sizes_grid = np.linspace(lo, hi, n_aug)
         Hc_interp  = np.interp(sizes_grid, d_orig, Hc_orig)
         Mr_interp  = np.interp(sizes_grid, d_orig, Mr_orig)
 
-        # Ruido pequeño para regularización (evita sobreajuste exacto)
+        # Small noise for regularization (avoids exact overfitting)
         Hc_grid = Hc_interp * (1.0 + 0.03 * rng.standard_normal(n_aug))
         Mr_grid = Mr_interp + 0.012 * rng.standard_normal(n_aug)
 
-        # ── Puntos aleatorios dentro del rango ────────────────────────────────
+        # ── Random points within the range ───────────────────────────────────
         sizes_rand = rng.uniform(lo, hi, n_aug // 3)
         Hc_rand    = np.interp(sizes_rand, d_orig, Hc_orig) * \
                      (1.0 + 0.05 * rng.standard_normal(n_aug // 3))
         Mr_rand    = np.interp(sizes_rand, d_orig, Mr_orig) + \
                      0.02 * rng.standard_normal(n_aug // 3)
 
-        # ── Extrapolación en los extremos (tendencia física power-law) ────────
+        # ── Extrapolation at the extremes (physical power-law trend) ─────────
         n_ext = 15
-        # Extrapolación baja (d < lo): Hc crece ∝ d^1/2  (monodominio pequeño)
+        # Low extrapolation (d < lo): Hc grows ∝ d^1/2  (small single-domain)
         sizes_lo  = np.linspace(max(2.0, lo * 0.35), lo, n_ext, endpoint=False)
         Hc_lo_ref = Hc_orig[0]
         Hc_lo     = Hc_lo_ref * (sizes_lo / lo) ** 0.40
         Mr_lo     = np.full(n_ext, min(Mr_orig[0] * 1.05, 0.95))
 
-        # Extrapolación alta (d > hi): Hc cae ∝ d^-2  (multidominio)
+        # High extrapolation (d > hi): Hc drops ∝ d^-2  (multi-domain)
         sizes_hi  = np.linspace(hi, hi * 1.55, n_ext, endpoint=False)
         Hc_hi     = Hc_orig[-1] * (hi / sizes_hi) ** 1.80
         Mr_hi_arr = np.linspace(Mr_orig[-1], max(Mr_orig[-1] * 0.55, 0.15), n_ext)
 
-        # ── Puntos âncora originales con peso aumentado (×15) ─────────────────
+        # ── Original anchor points with increased weight (×15) ────────────────
         n_rep_orig = 15
         d_rep   = np.tile(d_orig,  n_rep_orig)
         Hc_rep  = np.tile(Hc_orig, n_rep_orig)
         Mr_rep  = np.tile(Mr_orig, n_rep_orig)
 
-        # ── Incorporar feedback del usuario (×20) ─────────────────────────────
+        # ── Incorporate user feedback (×20) ───────────────────────────────────
         fb = self._feedback.get(mat_id, [])
         if fb:
             fb_arr  = np.array(fb)     # shape (N_fb, 9): [7 features + Hc + Mr]
@@ -242,7 +268,7 @@ class MicromagneticMLEngine:
             Hc_rep  = np.concatenate([Hc_rep, np.tile(Hc_fb, n_rep_fb)])
             Mr_rep  = np.concatenate([Mr_rep, np.tile(Mr_fb, n_rep_fb)])
 
-        # ── Concatenar todo ───────────────────────────────────────────────────
+        # ── Concatenate all sources ───────────────────────────────────────────
         sizes_all = np.concatenate([
             sizes_grid, sizes_rand,
             sizes_lo, sizes_hi,
@@ -271,13 +297,13 @@ class MicromagneticMLEngine:
 
     def train(self, mat_id: Optional[str] = None) -> None:
         """
-        Entrena (o reentrenar) el ensemble GBR + RF + MLP para los materiales
-        indicados. Si mat_id es None, entrena los 8 materiales.
+        Train (or retrain) the GBR + RF + MLP ensemble for the specified
+        materials. If mat_id is None, trains all 8 materials.
 
         Parameters
         ----------
         mat_id : str | None
-            Material específico o None para todos.
+            Specific material ID or None for all.
         """
         targets = [mat_id] if mat_id else list(self.mdb.keys())
         for mid in targets:
@@ -292,7 +318,7 @@ class MicromagneticMLEngine:
         sc = StandardScaler()
         Xs = sc.fit_transform(X)
 
-        # ── Definición de modelos (producción) ───────────────────────────────
+        # ── Production model definitions ─────────────────────────────────────
         def _gbr(rs):
             return GradientBoostingRegressor(
                 n_estimators=200, max_depth=4,
@@ -318,7 +344,7 @@ class MicromagneticMLEngine:
                 random_state=rs,
             )
 
-        # ── Modelos rápidos solo para CV (menos árboles / capas) ──────────────
+        # ── Fast models for CV only (fewer trees / layers) ───────────────────
         def _gbr_cv(rs):
             return GradientBoostingRegressor(
                 n_estimators=60, max_depth=3,
@@ -339,7 +365,7 @@ class MicromagneticMLEngine:
                 random_state=rs,
             )
 
-        # ── Entrenamiento (modelos completos) ─────────────────────────────────
+        # ── Training (full production models) ────────────────────────────────
         fitted = {}
         for name, (mhc, mmr) in {
             'GBR': (_gbr(0), _gbr(1)),
@@ -348,7 +374,7 @@ class MicromagneticMLEngine:
         }.items():
             fitted[name] = (mhc.fit(Xs, Hc), mmr.fit(Xs, Mr))
 
-        # ── Métricas: R² CV con modelos rápidos (3-fold) ─────────────────────
+        # ── Metrics: R² CV with fast models (3-fold) ────────────────────────
         cv = KFold(n_splits=3, shuffle=True, random_state=42)
 
         def _cv_r2(factory, y):
@@ -505,7 +531,7 @@ class MicromagneticMLEngine:
         Predicción vectorizada para múltiples tamaños a la vez.
 
         Llama a sklearn.predict() una sola vez por modelo en lugar de hacerlo
-        para cada tamaño — mucho más rápido que hacer predict_fast() en bucle.
+        per size — much faster than calling predict_fast() in a loop.
 
         Parameters
         ----------
@@ -540,8 +566,8 @@ class MicromagneticMLEngine:
         T: Optional[float] = None,
     ) -> dict[str, dict[str, float]]:
         """
-        Retorna las predicciones individuales de cada modelo y el ensemble.
-        Usa predict_fast para el ensemble (sin iteración de árboles RF → rápido).
+        Return individual predictions from each model and the ensemble.
+        Uses predict_fast for the ensemble (no RF tree iteration → fast).
 
         Returns
         -------
@@ -689,16 +715,16 @@ class MicromagneticMLEngine:
         T: Optional[float] = None,
     ) -> None:
         """
-        Registra el resultado de una simulación como punto de feedback.
-        El feedback se incorpora al dataset en el próximo `retrain_with_feedback()`.
+        Register a simulation result as a feedback point.
+        Feedback is incorporated into the dataset on the next `retrain_with_feedback()`.
 
         Parameters
         ----------
-        mat_id  : clave del material
-        d_nm    : diámetro de partícula simulado (nm)
-        Hc_sim  : Hc resultado de la simulación (mT)
-        Mr_sim  : Mr/Ms resultado de la simulación
-        T       : temperatura usada (K)
+        mat_id  : material key
+        d_nm    : simulated particle diameter (nm)
+        Hc_sim  : Hc from the simulation (mT)
+        Mr_sim  : Mr/Ms from the simulation
+        T       : temperature used (K)
         """
         feat = self.features(d_nm, mat_id, T)      # shape (7,)
         row  = list(feat) + [float(Hc_sim), float(Mr_sim)]  # 9 valores
@@ -706,8 +732,8 @@ class MicromagneticMLEngine:
 
     def retrain_with_feedback(self, mat_id: Optional[str] = None) -> None:
         """
-        Reentrenar incorporando todo el feedback acumulado.
-        Equivalente a `train()` pero los datos de feedback tienen peso ×20.
+        Retrain incorporating all accumulated feedback.
+        Equivalent to `train()` but feedback data carries weight ×20.
         """
         self.train(mat_id)
 
@@ -727,19 +753,19 @@ class MicromagneticMLEngine:
 
     def get_metrics(self, mat_id: str) -> dict:
         """
-        Retorna las métricas de evaluación para un material.
+        Return evaluation metrics for a material.
 
         Returns
         -------
-        dict con claves: r2_cv_hc, r2_cv_mr, rmse_hc, rmse_mr,
-                         weights_hc, weights_mr, n_train, n_feedback
+        dict with keys: r2_cv_hc, r2_cv_mr, rmse_hc, rmse_mr,
+                        weights_hc, weights_mr, n_train, n_feedback
         """
         return self._metrics.get(mat_id, {})
 
     def metrics_dataframe(self) -> list[dict]:
         """
-        Genera una lista de dicts lista para crear un DataFrame comparativo
-        de todos los modelos y materiales.
+        Generate a list of dicts ready for building a comparative DataFrame
+        of all models and materials.
         """
         rows = []
         for mid, m in self._metrics.items():
@@ -747,13 +773,13 @@ class MicromagneticMLEngine:
             for name in self.MODEL_NAMES:
                 rows.append({
                     'Material':    mat_name,
-                    'Modelo':      name,
+                    'Model':       name,
                     'R² CV  Hc':   round(m['r2_cv_hc'].get(name, 0), 4),
                     'R² CV  Mr':   round(m['r2_cv_mr'].get(name, 0), 4),
                     'RMSE Hc (mT)':round(m['rmse_hc'].get(name, 0), 2),
                     'RMSE Mr':     round(m['rmse_mr'].get(name, 0), 4),
-                    'Peso Hc':     round(m['weights_hc'][self.MODEL_NAMES.index(name)], 3),
-                    'Peso Mr':     round(m['weights_mr'][self.MODEL_NAMES.index(name)], 3),
+                    'Weight Hc':   round(m['weights_hc'][self.MODEL_NAMES.index(name)], 3),
+                    'Weight Mr':   round(m['weights_mr'][self.MODEL_NAMES.index(name)], 3),
                 })
         return rows
 
@@ -776,7 +802,7 @@ class MicromagneticMLEngine:
         }
 
     def feature_importance_all(self) -> dict[str, dict]:
-        """Importancia de features para todos los materiales."""
+        """Feature importance for all materials."""
         return {mid: self.feature_importance(mid) for mid in self._models}
 
     # ── Estado del engine ─────────────────────────────────────────────────────
@@ -786,22 +812,22 @@ class MicromagneticMLEngine:
         return self._trained and bool(self._models)
 
     def summary(self) -> str:
-        """Resumen del estado del engine en texto."""
+        """Engine status summary as a text string."""
         if not self.is_trained:
-            return "Engine no entrenado."
+            return "Engine not trained."
         lines = [
             "═══ MicromagneticMLEngine v4.0 ═══",
-            f"  Materiales : {len(self._models)}",
-            f"  Modelos    : GBR + RF + MLP (ensemble ponderado por R² CV)",
+            f"  Materials  : {len(self._models)}",
+            f"  Models     : GBR + RF + MLP (R² CV weighted ensemble)",
             f"  Features   : {len(self.FEATURE_NAMES)} ({', '.join(self.FEATURE_NAMES[:3])} …)",
             f"  T_sim      : {self.T_sim} K",
-            f"  Feedback   : {self.total_feedback} puntos acumulados",
+            f"  Feedback   : {self.total_feedback} accumulated points",
         ]
-        # Calibración OOMMF
+        # OOMMF calibration
         try:
             import oommf_data_manager as _odm
             cal = _odm.load_calibration_db()
-            lines.append(f"  Cal. OOMMF : {len(cal)} puntos reales")
+            lines.append(f"  OOMMF cal. : {len(cal)} real data points")
         except Exception:
             pass
         for mid, m in self._metrics.items():
