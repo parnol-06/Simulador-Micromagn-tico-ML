@@ -1,0 +1,21 @@
+# requirements.lock — versiones exactas para reproducibilidad
+#
+# CÓMO ACTUALIZAR ESTE ARCHIVO:
+#   Desde el entorno virtual o container del proyecto:
+#   $ pip freeze > requirements.lock
+#
+# CÓMO USAR EN DOCKER:
+#   RUN pip install --no-cache-dir -r requirements.lock
+#
+# Versiones mínimas validadas (actualizadas 2026-04-17).
+# Ejecutar `pip freeze` desde el container para obtener el hash exacto de cada dep transitiva.
+
+numpy==1.26.4
+scipy==1.13.1
+matplotlib==3.9.2
+scikit-learn==1.5.2
+streamlit==1.37.1
+pandas==2.2.3
+plotly==5.24.1
+reportlab==4.2.5
+kaleido==0.2.1

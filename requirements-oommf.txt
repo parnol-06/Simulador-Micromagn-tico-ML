@@ -1,0 +1,11 @@
+# ── Ubermag / OOMMF stack (optional — requires OOMMF installed separately) ───
+#
+# Install with:
+#   pip install -r requirements-oommf.txt
+#
+# Requires Docker or a local OOMMF/Tcl installation.
+# See: https://ubermag.github.io/installation.html
+#
+discretisedfield>=0.92.0
+micromagneticmodel>=0.65.0
+oommfc>=0.66.0

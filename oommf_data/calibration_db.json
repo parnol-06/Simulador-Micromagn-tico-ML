@@ -1,0 +1,18 @@
+[
+  {
+    "mat_id": "fe",
+    "d_nm": 42.0,
+    "geom_id": "sphere",
+    "Hc_mT": 69.2,
+    "Mr_Ms": 0.3701,
+    "source": "12nm.ipynb"
+  },
+  {
+    "mat_id": "fe",
+    "d_nm": 16.0,
+    "geom_id": "sphere",
+    "Hc_mT": 0.32,
+    "Mr_Ms": 1.1827,
+    "source": "_sb_upload_ciclo_histeresis.txt"
+  }
+]

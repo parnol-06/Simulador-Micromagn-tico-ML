@@ -1,30 +1,30 @@
 """
 =============================================================================
- ubermag_validator.py  —  Validación de Geometrías con Ubermag / OOMMF
+ ubermag_validator.py  —  Geometry Validation with Ubermag / OOMMF
 =============================================================================
 
-Valida las 8 geometrías del simulador utilizando el stack científico de
-Ubermag (discretisedfield + micromagneticmodel + oommfc):
+Validates the 8 simulator geometries using the Ubermag scientific stack
+(discretisedfield + micromagneticmodel + oommfc):
 
-  1. GEOMETRÍAS  — Meshes 3D con discretisedfield, máscaras verificadas
-  2. FÍSICA      — Factores de desmagnetización (Nd) analíticos (Osborn 1945)
-                   y numéricos via celda unitaria discreta
-  3. OOMMF       — Simulación de histéresis completa vía oommfc (Docker runner)
-                   Extrae Hc y Mr del lazo simulado → factores validados
-  4. COMPARACIÓN — ML predicho vs. Ubermag simulado vs. Stoner-Wohlfarth teórico
+  1. GEOMETRIES  — 3D meshes with discretisedfield, verified masks
+  2. PHYSICS     — Demagnetization factors (Nd) analytical (Osborn 1945)
+                   and numerical via discrete unit cell
+  3. OOMMF       — Full hysteresis simulation via oommfc (Docker runner)
+                   Extracts Hc and Mr from the simulated loop → validated factors
+  4. COMPARISON  — ML predicted vs. Ubermag simulated vs. Stoner-Wohlfarth theory
 
-Requisitos:
+Requirements:
   pip install discretisedfield micromagneticmodel oommfc
-  Docker con imagen: docker pull ubermag/oommf  (para simulaciones completas)
+  Docker image: docker pull ubermag/oommf  (for full simulations)
 
-Uso sin OOMMF (solo geometría + teoría):
+Usage without OOMMF (geometry + theory only):
   from ubermag_validator import UbermagValidator
   val = UbermagValidator(MATERIALS_DB, GEOMETRY_MODES)
-  results = val.validate_all()           # solo cálculo analítico
-  fig = val.plot_comparison(results)     # figura Plotly comparativa
+  results = val.validate_all()           # analytical calculation only
+  fig = val.plot_comparison(results)     # comparative Plotly figure
 
-Uso con OOMMF (Docker requerido):
-  results = val.validate_all(run_oommf=True)   # simulación completa
+Usage with OOMMF (Docker required):
+  results = val.validate_all(run_oommf=True)   # full simulation
 =============================================================================
 """
 from __future__ import annotations
@@ -41,11 +41,36 @@ from plotly.subplots import make_subplots
 
 warnings.filterwarnings('ignore')
 
-# ── Constantes físicas ────────────────────────────────────────────────────────
+# ── Optional Ubermag / OOMMF stack ───────────────────────────────────────────
+# These packages are heavy scientific dependencies installed separately via
+# requirements-oommf.txt.  The rest of the module works without them.
+try:
+    import discretisedfield as _discretisedfield  # noqa: F401
+    _HAS_DISCRETISEDFIELD = True
+except ImportError:
+    _HAS_DISCRETISEDFIELD = False
+
+try:
+    import micromagneticmodel as _micromagneticmodel  # noqa: F401
+    _HAS_MM = True
+except ImportError:
+    _HAS_MM = False
+
+try:
+    import oommfc as _oommfc  # noqa: F401
+    _HAS_OOMMFC = True
+except ImportError:
+    _HAS_OOMMFC = False
+
+# Public capability summary (read by app.py to decide what to show)
+UBERMAG_AVAILABLE = _HAS_DISCRETISEDFIELD and _HAS_MM
+OOMMF_AVAILABLE   = UBERMAG_AVAILABLE and _HAS_OOMMFC
+
+# ── Physical constants ───────────────────────────────────────────────────────
 _MU0  = 4.0 * np.pi * 1e-7   # H/m
 _KB   = 1.380649e-23           # J/K
 
-# ── Tema visual (consistente con app.py) ─────────────────────────────────────
+# ── Visual theme (consistent with app.py) ────────────────────────────────────
 _BG     = '#0f172a'
 _PANEL  = '#1e293b'
 _TEXT   = '#f1f5f9'
@@ -54,25 +79,25 @@ _BORDER = '#334155'
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  FACTORES DE DESMAGNETIZACIÓN  (fórmulas analíticas exactas)
+#  DEMAGNETIZATION FACTORS  (exact analytical formulas)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def Nd_sphere() -> tuple[float, float, float]:
-    """N_x, N_y, N_z para esfera — exactamente 1/3 cada uno."""
+    """N_x, N_y, N_z for a sphere — exactly 1/3 each."""
     return 1/3, 1/3, 1/3
 
 
 def Nd_prolate_ellipsoid(c_over_a: float) -> tuple[float, float, float]:
     """
-    Factor de desmagnetización Osborn (1945) para elipsoide prolato.
-    Semiejes a = b < c  →  c_over_a = c/a > 1.
+    Demagnetization factor Osborn (1945) for a prolate ellipsoid.
+    Semi-axes a = b < c  →  c_over_a = c/a > 1.
 
-    Returns (N_x, N_y, N_z)  donde z es el eje largo (c).
+    Returns (N_x, N_y, N_z)  where z is the long axis (c).
     """
     if abs(c_over_a - 1.0) < 1e-6:
         return 1/3, 1/3, 1/3
     k  = c_over_a                          # k = c/a > 1
-    e  = np.sqrt(1.0 - 1.0 / k**2)        # excentricidad
+    e  = np.sqrt(1.0 - 1.0 / k**2)        # eccentricity
     Nz = (1 - e**2) / (2 * e**3) * (np.log((1 + e) / (1 - e)) - 2 * e)
     Nx = (1 - Nz) / 2
     return Nx, Nx, Nz
@@ -80,16 +105,16 @@ def Nd_prolate_ellipsoid(c_over_a: float) -> tuple[float, float, float]:
 
 def Nd_oblate_spheroid(a_over_c: float) -> tuple[float, float, float]:
     """
-    Factor de desmagnetización Osborn (1945) para elipsoide oblato.
-    Semiejes a = b > c  →  a_over_c = a/c > 1.
+    Demagnetization factor Osborn (1945) for an oblate spheroid.
+    Semi-axes a = b > c  →  a_over_c = a/c > 1.
 
-    Returns (N_x, N_y, N_z)  donde z es el eje corto (c).
+    Returns (N_x, N_y, N_z)  where z is the short axis (c).
     """
     if abs(a_over_c - 1.0) < 1e-6:
         return 1/3, 1/3, 1/3
     k  = a_over_c                          # k = a/c > 1
     e  = np.sqrt(1.0 - 1.0 / k**2)
-    # Osborn oblato: N_z (eje corto, mayor desmagnetización)
+    # Osborn oblate: N_z (short axis, higher demagnetization)
     Nz = (1 + e**2) / e**3 * (e - np.arctan(e))
     Nx = (1 - Nz) / 2
     return Nx, Nx, Nz
@@ -97,31 +122,31 @@ def Nd_oblate_spheroid(a_over_c: float) -> tuple[float, float, float]:
 
 def Nd_finite_cylinder(h_over_d: float) -> tuple[float, float, float]:
     """
-    Aproximación de Chen et al. (1991) para cilindro finito.
-    AR = h/d  (razón de aspecto: alto / diámetro).
+    Chen et al. (1991) approximation for a finite cylinder.
+    AR = h/d  (aspect ratio: height / diameter).
 
-    Returns (N_x, N_y, N_z)  donde z es el eje axial del cilindro.
+    Returns (N_x, N_y, N_z)  where z is the cylinder axial direction.
     """
     t = max(h_over_d, 1e-6)
-    # N_z axial (desmagnetización a lo largo del eje)
-    Nz = 1.0 / (1.0 + 2.0 * t)            # Chen (1991) simplificado
+    # N_z axial (demagnetization along the axis)
+    Nz = 1.0 / (1.0 + 2.0 * t)            # Chen (1991) simplified
     Nx = (1 - Nz) / 2
     return Nx, Nx, Nz
 
 
 def Nd_cuboid(a: float, b: float, c: float) -> tuple[float, float, float]:
     """
-    Aharoni (1998) formula aproximada para cuboide a×b×c.
-    Normalizado a a=1.
+    Aharoni (1998) approximate formula for a cuboid a×b×c.
+    Normalized to a=1.
 
     Returns (N_x, N_y, N_z).
     """
-    # Normalizar
+    # Normalize
     b_n = b / a
     c_n = c / a
-    # Integral numérica de tensor desmagnetizante (Aharoni 1998, ecuación 29)
+    # Numerical integral of demagnetizing tensor (Aharoni 1998, eq. 29)
     def _nd_aharoni(alpha, beta):
-        """N_z para cuboide 1 × alpha × beta."""
+        """N_z for cuboid 1 × alpha × beta."""
         a2, b2 = alpha**2, beta**2
         abc = np.sqrt(1 + a2 + b2)
         t1 = (beta / (2*np.pi)) * np.log((1 + alpha**2) / (1 + a2 + b2))
@@ -132,26 +157,26 @@ def Nd_cuboid(a: float, b: float, c: float) -> tuple[float, float, float]:
         return t1 + t2 + t3 + t4
 
     Nz = _nd_aharoni(b_n, c_n)
-    Nx = _nd_aharoni(c_n, 1.0/b_n)   # N_x via permutación
+    Nx = _nd_aharoni(c_n, 1.0/b_n)   # N_x via permutation
     Ny = 1 - Nx - Nz
     return Nx, Ny, Nz
 
 
 def Nd_torus_approx(R_major: float, r_tube: float) -> float:
     """
-    Aproximación para toroide: promedio del tensor N usando el modelo
-    de cilindro doblado (curvo). Resultado: N ≈ promedio entre disco y anillo.
-    Returns escalar N_eff.
+    Torus approximation: average of N tensor using the bent-cylinder model.
+    Result: N ≈ average between disk and ring.
+    Returns scalar N_eff.
     """
-    AR = 2 * r_tube / (2 * R_major)      # razón de aspecto tubo/eje
-    # N efectivo como promedio isotrópico del toro (Field et al. 2011)
+    AR = 2 * r_tube / (2 * R_major)      # tube/axis aspect ratio
+    # Effective N as isotropic average of the torus (Field et al. 2011)
     Nx, _, Nz = Nd_finite_cylinder(1.0 / AR)
-    N_eff = (Nx + Nx + Nz) / 3           # promedio isotrópico aproximado
+    N_eff = (Nx + Nx + Nz) / 3           # approximate isotropic average
     return N_eff
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  FACTORES DE FORMA FÍSICOS BASADOS EN Nd
+#  PHYSICS-BASED SHAPE FACTORS FROM Nd
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def compute_shape_factors(
@@ -161,31 +186,31 @@ def compute_shape_factors(
     Nd_ref: tuple         = (1/3, 1/3, 1/3),
 ) -> tuple[float, float]:
     """
-    Calcula factor_hc y factor_mr a partir de los factores de
-    desmagnetización usando el modelo de Stoner-Wohlfarth con corrección
-    de forma (válido en régimen monodominio).
+    Compute factor_hc and factor_mr from demagnetization factors using
+    the Stoner-Wohlfarth model with shape correction (valid in single-domain
+    regime).
 
     H_sw = H_K,mca + ΔN·Ms
-    donde ΔN = N_perp - N_paral  (diferencia entre ejes perpendicular y fácil).
+    where ΔN = N_perp - N_para  (difference between perpendicular and easy axes).
 
     Parameters
     ----------
-    Nd_geom  : (N_x, N_y, N_z) de la geometría
-    Nd_ref   : (N_x, N_y, N_z) de la esfera de referencia (= 1/3, 1/3, 1/3)
-    Ms       : magnetización de saturación [A/m]
-    K1       : constante de anisotropía [J/m³]
+    Nd_geom  : (N_x, N_y, N_z) for the geometry
+    Nd_ref   : (N_x, N_y, N_z) for the reference sphere (= 1/3, 1/3, 1/3)
+    Ms       : saturation magnetization [A/m]
+    K1       : anisotropy constant [J/m³]
 
     Returns
     -------
     (factor_hc, factor_mr)
     """
-    Nx_g, _, Nz_g = Nd_geom                   # eje fácil = z
+    Nx_g, _, Nz_g = Nd_geom                   # easy axis = z
     Nx_r, _, Nz_r = Nd_ref
 
-    # Campo de anisotropía cristalina  (A/m)
+    # Magnetocrystalline anisotropy field (A/m)
     H_mca = 2.0 * abs(K1) / (Ms + 1e-6)
 
-    # Campo de anisotropía de forma
+    # Shape anisotropy field
     delta_N_geom = max(Nx_g - Nz_g, 0.0)
     delta_N_ref  = max(Nx_r - Nz_r, 0.0)
 
@@ -197,9 +222,9 @@ def compute_shape_factors(
 
     factor_hc = float(np.clip(H_sw_geom / H_sw_ref, 0.01, 5.0))
 
-    # factor_mr: en geometrías con mayor anisotropía de forma → Mr ligeramente
-    # reducido (bloqueo más fácil, pero conmutación más brusca)
-    # Se modela con la razón de aspecto efectiva:
+    # factor_mr: geometries with higher shape anisotropy → Mr slightly reduced
+    # (easier pinning but sharper switching)
+    # Modeled via the effective aspect ratio:
     Nz_eff = Nz_g / Nz_r if Nz_r > 0 else 1.0
     factor_mr = float(np.clip(1.0 / max(Nz_eff, 0.1) ** 0.10, 0.50, 1.20))
 
@@ -207,17 +232,17 @@ def compute_shape_factors(
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  DEFINICIÓN DE GEOMETRÍAS CON DISCRETISEDFIELD
+#  GEOMETRY DEFINITION WITH DISCRETISEDFIELD
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def _make_mesh(d_nm: float, cell_nm: float = 2.5) -> "df.Mesh":
-    """Crea un mesh cúbico con margen del 30% alrededor del diámetro."""
+    """Create a cubic mesh with 30% margin around the diameter."""
     import discretisedfield as df
     r  = d_nm / 2 * 1e-9
     cx = cell_nm * 1e-9
-    # número de celdas: diámetro + 30% → redondeado al par más cercano
+    # Number of cells: diameter + 30% → rounded to the nearest even number
     n_half_raw = int(np.ceil(r * 1.30 / cx))
-    n_half = n_half_raw + (n_half_raw % 2)  # forzar par
+    n_half = n_half_raw + (n_half_raw % 2)  # force even
     half   = n_half * cx
     p1 = (-half, -half, -half)
     p2 = ( half,  half,  half)
@@ -226,8 +251,8 @@ def _make_mesh(d_nm: float, cell_nm: float = 2.5) -> "df.Mesh":
 
 def _geom_mask(geom_id: str, d_nm: float):
     """
-    Devuelve función de máscara  f(point) → Ms | 0  para discretisedfield.
-    Mismas proporciones que viz3d.py para coherencia.
+    Return mask function  f(point) → Ms | 0  for discretisedfield.
+    Same proportions as viz3d.py for consistency.
     """
     r  = d_nm / 2 * 1e-9   # radio en metros
     Ms = 1.0                # valor de placeholder; se normaliza después
@@ -274,12 +299,22 @@ def build_ubermag_field(
     cell_nm: float = 2.5,
 ) -> tuple:
     """
-    Construye mesh + field de magnetización usando discretisedfield.
+    Build mesh + magnetization field using discretisedfield.
 
     Returns
     -------
-    (mesh, field, system)  donde system es un mm.System listo para oommfc.
+    (mesh, field, system)  where system is a mm.System ready for oommfc.
+
+    Raises
+    ------
+    ImportError if discretisedfield or micromagneticmodel are not installed.
     """
+    if not _HAS_DISCRETISEDFIELD or not _HAS_MM:
+        raise ImportError(
+            'discretisedfield and micromagneticmodel are required for mesh '
+            'construction.  Install them with:\n'
+            '  pip install -r requirements-oommf.txt'
+        )
     import discretisedfield as df
     import micromagneticmodel as mm
 
@@ -291,7 +326,7 @@ def build_ubermag_field(
     mesh = _make_mesh(d_nm, cell_nm)
     norm_fn = _geom_mask(geom_id, d_nm)
 
-    # Field con Ms como valor de norma dentro de la geometría
+    # Field with Ms as norm value inside the geometry
     def m_init(point):
         val = norm_fn(point)
         return (0, 0, Ms) if val > 0 else (0, 0, 0)
@@ -299,7 +334,7 @@ def build_ubermag_field(
     field = df.Field(mesh, nvdim=3, value=m_init, norm=Ms,
                      valid=lambda p: norm_fn(p) > 0)
 
-    # Construir sistema micromagnético
+    # Build micromagnetic system
     system = mm.System(name=f'{geom_id}_{d_nm:.0f}nm')
     system.energy = (
         mm.Exchange(A=A) +
@@ -312,13 +347,60 @@ def build_ubermag_field(
     return mesh, field, system
 
 
+# ── Analytical volume fractions relative to a sphere of the same diameter ─────
+# Derived from the same mask proportions used in _geom_mask() so the
+# fallback values are self-consistent even without discretisedfield.
+_ANALYTICAL_V_REL: dict[str, float] = {
+    # V / V_sphere  (sphere has V_rel = 1.0 by definition)
+    'sphere':            1.000,
+    # cuboid: sides = d × 0.80d × 0.55d  → V = 0.440 d³
+    'cuboid':            0.440 / ((4/3) * np.pi * 0.125),   # ≈ 0.841
+    # disk cylinder: r=d/2, h=0.32d  → V = π(d/2)²·0.32d
+    'cylinder_disk':     (np.pi * 0.25 * 0.32) / ((4/3) * np.pi * 0.125),  # ≈ 0.480
+    # rod cylinder: r=0.38d/2=0.19d, h=d  → V = π(0.19d)²·d
+    'cylinder_rod':      (np.pi * 0.0361) / ((4/3) * np.pi * 0.125),        # ≈ 0.272
+    # prolate ellipsoid: a=b=0.31d, c=0.5d  → V = (4/3)π·0.31²·0.5 d³
+    'ellipsoid_prolate': (0.3100**2 * 0.500) / (0.125),                      # ≈ 0.384
+    # oblate ellipsoid: a=b=0.5d, c=0.19d  → V = (4/3)π·0.25·0.19 d³
+    'ellipsoid_oblate':  (0.2500 * 0.190) / (0.125),                         # ≈ 0.380
+    # torus: R=0.30d, r_tube=0.16d  → V = 2π²Rr²
+    'torus':             (2 * np.pi**2 * 0.30 * 0.16**2) / ((4/3)*np.pi*0.125),
+    # core-shell: full sphere (same mask as sphere)
+    'core_shell':        1.000,
+}
+
+
 def measure_geometry(geom_id: str, d_nm: float, cell_nm: float = 2.5) -> dict:
     """
-    Mide propiedades geométricas via discretisedfield:
-    volumen, fracción de llenado, dimensiones bounding-box.
+    Measure geometric properties via discretisedfield (discrete mesh) when
+    available, or return an analytical approximation otherwise.
 
-    Returns dict con métricas geométricas.
+    Returns dict with geometric metrics.  The key ``'analytical_fallback'``
+    is True when discretisedfield was not installed.
     """
+    V_sphere_nm3 = (4/3) * np.pi * (d_nm / 2) ** 3   # nm³
+
+    if not _HAS_DISCRETISEDFIELD:
+        # Analytical fallback — no mesh, values from geometry definitions
+        V_rel    = float(_ANALYTICAL_V_REL.get(geom_id, 1.0))
+        V_nm3    = V_rel * V_sphere_nm3
+        Nd       = GEOM_Nd.get(geom_id, (1/3, 1/3, 1/3))
+        return {
+            'n_cells':          None,
+            'n_total':          None,
+            'fill_pct':         V_rel * 100.0 * ((4/3)*np.pi*0.125) / 1.0,
+            'V_nm3':            V_nm3,
+            'V_sphere_nm3':     V_sphere_nm3,
+            'V_rel':            V_rel,
+            'mesh_n':           None,
+            'cell_nm':          cell_nm,
+            'Nd_x':             Nd[0],
+            'Nd_y':             Nd[1],
+            'Nd_z':             Nd[2],
+            'Nd_aniso':         round(float(max(Nd) - min(Nd)), 4),
+            'analytical_fallback': True,
+        }
+
     import discretisedfield as df
 
     mesh    = _make_mesh(d_nm, cell_nm)
@@ -329,23 +411,24 @@ def measure_geometry(geom_id: str, d_nm: float, cell_nm: float = 2.5) -> dict:
     n_total = int(mesh.n.prod())
     cx      = cell_nm * 1e-9
 
-    V_discr  = n_valid * cx**3            # m³
-    V_sphere = (4/3) * np.pi * (d_nm/2 * 1e-9)**3
+    V_discr_m3 = n_valid * cx**3
+    V_sphere_m3 = (4/3) * np.pi * (d_nm/2 * 1e-9)**3
 
     return {
-        'n_cells':    n_valid,
-        'n_total':    n_total,
-        'fill_pct':   100.0 * n_valid / n_total,
-        'V_nm3':      V_discr * 1e27,
-        'V_sphere_nm3': V_sphere * 1e27,
-        'V_rel':      V_discr / V_sphere,
-        'mesh_n':     list(mesh.n),
-        'cell_nm':    cell_nm,
+        'n_cells':          n_valid,
+        'n_total':          n_total,
+        'fill_pct':         100.0 * n_valid / n_total,
+        'V_nm3':            V_discr_m3 * 1e27,
+        'V_sphere_nm3':     V_sphere_m3 * 1e27,
+        'V_rel':            V_discr_m3 / V_sphere_m3,
+        'mesh_n':           list(mesh.n),
+        'cell_nm':          cell_nm,
+        'analytical_fallback': False,
     }
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  SIMULACIÓN OOMMF (requiere Docker con imagen ubermag/oommf)
+#  OOMMF SIMULATION (requires Docker with ubermag/oommf image)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def run_oommf_hysteresis(
@@ -359,17 +442,17 @@ def run_oommf_hysteresis(
     output_dir: str = '/tmp/oommf_val',
 ) -> Optional[dict]:
     """
-    Ejecuta lazo de histéresis completo con OOMMF vía oommfc.
-    Requiere Docker con imagen ubermag/oommf.
+    Run a full hysteresis loop with OOMMF via oommfc.
+    Requires Docker with the ubermag/oommf image.
 
     Parameters
     ----------
-    runner : oommfc runner. None = detecta automáticamente (Docker primero).
+    runner : oommfc runner. None = auto-detect (Docker first).
 
     Returns
     -------
     {'H': ndarray(mT), 'M': ndarray(A/m), 'Hc_mT': float, 'Mr': float}
-    None si OOMMF no está disponible.
+    None if OOMMF is not available.
     """
     try:
         import oommfc as oc
@@ -380,25 +463,25 @@ def run_oommf_hysteresis(
 
     os.makedirs(output_dir, exist_ok=True)
 
-    # --- Configurar runner ---
+    # --- Configure runner ---
     if runner is None:
         runner = oc.oommf.DockerOOMMFRunner(image='ubermag/oommf')
 
-    # --- Construir sistema ---
+    # --- Build system ---
     mesh, field, system = build_ubermag_field(geom_id, d_nm, mat_params, cell_nm)
 
     p  = mat_params
     Ms = p['Ms_MA_m'] * 1e6   # A/m
     H_max_Am = H_max_mT * 1e3 / _MU0 / 1e-3   # mT → A/m
 
-    # --- Pasos del barrido ---
+    # --- Field sweep steps ---
     H_steps_Am = np.concatenate([
         np.linspace(H_max_Am, -H_max_Am, n_steps),
         np.linspace(-H_max_Am, H_max_Am,  n_steps),
     ])
 
     try:
-        # Minimización de energía en cada paso de campo
+        # Energy minimization at each field step
         md = oc.MinDriver()
         H_out, M_out = [], []
 
@@ -411,7 +494,7 @@ def run_oommf_hysteresis(
             )
             md.drive(system, runner=runner,
                      dirname=os.path.join(output_dir, f'step_{len(H_out)}'))
-            # Magnetización media axial normalizada
+            # Mean axial normalized magnetization
             m_z = float(system.m.z.mean)
             M_out.append(m_z / Ms)
             H_out.append(H_z * _MU0 * 1e3)  # H_z [A/m] → H [mT]
@@ -419,11 +502,11 @@ def run_oommf_hysteresis(
         H_arr = np.array(H_out)
         M_arr = np.array(M_out)
 
-        # Extraer Hc y Mr
+        # Extract Hc and Mr
         n  = len(H_arr) // 2
-        # Rama descendente
+        # Descending branch
         M_dn = M_arr[:n]; H_dn = H_arr[:n]
-        # Interpolación: M=0 en bajada
+        # Interpolation: M=0 on the downward sweep
         try:
             from scipy.interpolate import interp1d
             sign_changes = np.where(np.diff(np.sign(M_dn)))[0]
@@ -449,15 +532,15 @@ def run_oommf_hysteresis(
         }
 
     except Exception as exc:
-        warnings.warn(f'OOMMF falló para {geom_id}: {exc}')
+        warnings.warn(f'OOMMF failed for {geom_id}: {exc}')
         return None
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  CLASE PRINCIPAL: UbermagValidator
+#  MAIN CLASS: UbermagValidator
 # ═══════════════════════════════════════════════════════════════════════════════
 
-#: Factores de desmagnetización por geometría (Osborn 1945 + Chen 1991)
+#: Demagnetization factors per geometry (Osborn 1945 + Chen 1991)
 GEOM_Nd: dict[str, tuple[float, float, float]] = {
     'sphere':            Nd_sphere(),
     'cuboid':            Nd_cuboid(1.0, 0.80, 0.55),
@@ -469,29 +552,29 @@ GEOM_Nd: dict[str, tuple[float, float, float]] = {
     'core_shell':        (0.32, 0.32, 0.36),   # biaxial por acoplamiento
 }
 
-#: Nombres científicos de cada geometría
+#: Scientific labels for each geometry
 GEOM_LABELS: dict[str, str] = {
-    'sphere':            'Esfera  (N=1/3, Osborn)',
-    'cuboid':            'Cuboide  (Aharoni 1998)',
-    'cylinder_disk':     'Disco cilíndrico  AR=0.32 (Chen 1991)',
-    'cylinder_rod':      'Barra cilíndrica  AR=2.63 (Chen 1991)',
-    'ellipsoid_prolate': 'Elipsoide prolato  c/a=1.61 (Osborn 1945)',
-    'ellipsoid_oblate':  'Elipsoide oblato  a/c=2.63 (Osborn 1945)',
-    'torus':             'Toroide  R=0.6r, r_t=0.32r (numérico)',
-    'core_shell':        'Núcleo-cáscara  r_in/r_out=0.55 (biaxial)',
+    'sphere':            'Sphere  (N=1/3, Osborn)',
+    'cuboid':            'Cuboid  (Aharoni 1998)',
+    'cylinder_disk':     'Disk cylinder  AR=0.32 (Chen 1991)',
+    'cylinder_rod':      'Rod cylinder  AR=2.63 (Chen 1991)',
+    'ellipsoid_prolate': 'Prolate ellipsoid  c/a=1.61 (Osborn 1945)',
+    'ellipsoid_oblate':  'Oblate ellipsoid  a/c=2.63 (Osborn 1945)',
+    'torus':             'Toroid  R=0.6r, r_t=0.32r (numerical)',
+    'core_shell':        'Core-shell  r_in/r_out=0.55 (biaxial)',
 }
 
 
 class UbermagValidator:
     """
-    Validador de geometrías y física micromagnética con Ubermag.
+    Geometry and micromagnetic physics validator using Ubermag.
 
     Parameters
     ----------
-    materials_db  : MATERIALS_DB del simulador
-    geometry_modes: GEOMETRY_MODES del simulador
-    d_test_nm     : diámetro de partícula de prueba para las simulaciones
-    T_sim         : temperatura de simulación (K)
+    materials_db  : MATERIALS_DB from the simulator
+    geometry_modes: GEOMETRY_MODES from the simulator
+    d_test_nm     : test particle diameter for simulations
+    T_sim         : simulation temperature (K)
     """
 
     def __init__(
@@ -509,36 +592,42 @@ class UbermagValidator:
         self._geom_ids  = list(geometry_modes.keys())
         self._mat_ids   = list(materials_db.keys())
 
-        # Resultados cacheados
+        # Cached results
         self._geom_metrics:  dict = {}
         self._nd_results:    dict = {}
         self._sw_factors:    dict = {}
         self._oommf_results: dict = {}
 
-    # ── Validación geométrica ──────────────────────────────────────────────
+    # ── Geometry validation ────────────────────────────────────────────────
 
     def validate_geometry(self, cell_nm: float = 2.5) -> dict[str, dict]:
         """
-        Mide y valida las 8 geometrías con discretisedfield.
-        Compara volumen discreto vs. analítico.
+        Measure and validate the 8 geometries.
+
+        Uses discretisedfield for discrete mesh metrics when available;
+        falls back to analytical volume approximations otherwise.
+        Analytical Nd factors (Osborn 1945, Chen 1991, Aharoni 1998) are always
+        attached regardless of whether the library is installed.
         """
         results = {}
         for gid in self._geom_ids:
             m = measure_geometry(gid, self.d_nm, cell_nm)
-            # Comparar N_d analítico con posición del centroide
+            # Always attach analytical Nd (overrides whatever measure_geometry set)
             Nd = GEOM_Nd.get(gid, (1/3, 1/3, 1/3))
-            m['Nd_x'], m['Nd_y'], m['Nd_z'] = Nd
+            m['Nd_x']    = Nd[0]
+            m['Nd_y']    = Nd[1]
+            m['Nd_z']    = Nd[2]
             m['Nd_aniso'] = round(float(max(Nd) - min(Nd)), 4)
             results[gid] = m
         self._geom_metrics = results
         return results
 
-    # ── Factores de Stoner-Wohlfarth ───────────────────────────────────────
+    # ── Stoner-Wohlfarth factors ───────────────────────────────────────────
 
     def compute_sw_factors(self, mat_id: str = 'fe') -> dict[str, dict]:
         """
-        Calcula factor_hc y factor_mr teórico via Stoner-Wohlfarth + Nd.
-        Usa el material de referencia para la escala absoluta.
+        Compute theoretical factor_hc and factor_mr via Stoner-Wohlfarth + Nd.
+        Uses the reference material for the absolute scale.
         """
         p   = self.mdb[mat_id]['params']
         Ms  = p['Ms_MA_m'] * 1e6   # A/m
@@ -563,7 +652,7 @@ class UbermagValidator:
         self._sw_factors = results
         return results
 
-    # ── Simulación OOMMF ───────────────────────────────────────────────────
+    # ── OOMMF simulation ───────────────────────────────────────────────────
 
     def run_oommf(
         self,
@@ -573,8 +662,8 @@ class UbermagValidator:
         n_steps: int             = 20,
     ) -> dict[str, Optional[dict]]:
         """
-        Lanza simulaciones OOMMF para las geometrías indicadas.
-        Requiere Docker con imagen ubermag/oommf.
+        Launch OOMMF simulations for the given geometries.
+        Requires Docker with the ubermag/oommf image.
 
         Returns dict {geom_id: result | None}
         """
@@ -598,7 +687,7 @@ class UbermagValidator:
         self._oommf_results = results
         return results
 
-    # ── Validación completa ────────────────────────────────────────────────
+    # ── Full validation ────────────────────────────────────────────────────
 
     def validate_all(
         self,
@@ -607,12 +696,12 @@ class UbermagValidator:
         cell_nm: float = 2.5,
     ) -> dict:
         """
-        Ejecuta la validación completa:
-          1. Geometría (discretisedfield)
-          2. Factores de Stoner-Wohlfarth analíticos
-          3. Simulación OOMMF (si run_oommf_flag=True y Docker disponible)
+        Run the full validation:
+          1. Geometry (discretisedfield)
+          2. Analytical Stoner-Wohlfarth factors
+          3. OOMMF simulation (if run_oommf_flag=True and Docker available)
 
-        Returns dict con todos los resultados.
+        Returns dict with all results.
         """
         geom   = self.validate_geometry(cell_nm)
         sw     = self.compute_sw_factors(mat_id)
@@ -630,12 +719,12 @@ class UbermagValidator:
             'mat_name':   self.mdb[mat_id]['name'],
         }
 
-    # ── Figuras Plotly ─────────────────────────────────────────────────────
+    # ── Plotly figures ─────────────────────────────────────────────────────
 
     def plot_geometry_metrics(self) -> go.Figure:
         """
-        Figura comparativa: volumen relativo y factor de desmagnetización
-        para las 8 geometrías.
+        Comparative figure: relative volume and demagnetization factor
+        for the 8 geometries.
         """
         if not self._geom_metrics:
             self.validate_geometry()
@@ -647,11 +736,20 @@ class UbermagValidator:
         Nd_z     = [self._geom_metrics[g].get('Nd_z', 1/3) for g in geom_ids]
         Nd_aniso = [self._geom_metrics[g].get('Nd_aniso', 0) for g in geom_ids]
 
+        # Detect whether we're using analytical fallback or real mesh data
+        _fallback = any(
+            self._geom_metrics[g].get('analytical_fallback', False)
+            for g in geom_ids
+        )
+        v_subtitle = ('Relative volume V/V_sphere (analytical approx.)'
+                      if _fallback else
+                      'Relative volume V/V_sphere (discretisedfield)')
+
         fig = make_subplots(
             rows=1, cols=2,
             subplot_titles=[
-                'Volumen relativo V/V_esfera (discretisedfield)',
-                'Anisotropía de forma  ΔN = N_x – N_z  (Osborn)',
+                v_subtitle,
+                'Shape anisotropy  ΔN = N_x – N_z  (Osborn)',
             ],
         )
 
@@ -673,11 +771,11 @@ class UbermagValidator:
                 hovertemplate=f'{lab}<br>ΔN = {Nd_aniso[i]:.4f}<extra></extra>',
             ), row=1, col=2)
 
-        # Línea de referencia esfera
+        # Sphere reference line
         fig.add_hline(y=1.0, line_dash='dot', line_color='#f1f5f9',
-                      annotation_text='Esfera', row=1, col=1)
+                      annotation_text='Sphere', row=1, col=1)
         fig.add_hline(y=0.0, line_dash='dot', line_color='#f1f5f9',
-                      annotation_text='Esfera', row=1, col=2)
+                      annotation_text='Sphere', row=1, col=2)
 
         fig.update_layout(
             paper_bgcolor=_BG,
@@ -685,7 +783,9 @@ class UbermagValidator:
             font=dict(color=_TEXT, size=10),
             margin=dict(l=60, r=20, t=70, b=100),
             title=dict(
-                text='Validación Geométrica — discretisedfield  ·  Ubermag',
+                text=('Geometry Validation — analytical (install Ubermag for mesh data)'
+                      if _fallback else
+                      'Geometry Validation — discretisedfield  ·  Ubermag'),
                 font=dict(size=13, color=_TEXT),
             ),
             height=420,
@@ -697,7 +797,7 @@ class UbermagValidator:
 
     def plot_shape_factors(self) -> go.Figure:
         """
-        Compara los factores de forma: app actual vs. Stoner-Wohlfarth teórico.
+        Compare shape factors: current app vs. theoretical Stoner-Wohlfarth.
         """
         if not self._sw_factors:
             self.compute_sw_factors()
@@ -711,8 +811,8 @@ class UbermagValidator:
 
         fig = make_subplots(
             rows=1, cols=2,
-            subplot_titles=['factor_hc — Hc (campo coercitivo)',
-                            'factor_mr — Mr/Ms (remanencia)'],
+            subplot_titles=['factor_hc — Hc (coercive field)',
+                            'factor_mr — Mr/Ms (remanence)'],
         )
 
         bar_kw = dict(barmode='group')
@@ -738,9 +838,9 @@ class UbermagValidator:
                       row=1, col=2)
 
         fig.add_hline(y=1.0, line_dash='dot', line_color='#6ee7b7', row=1, col=1,
-                      annotation_text='Esfera ref.')
+                      annotation_text='Sphere ref.')
         fig.add_hline(y=1.0, line_dash='dot', line_color='#6ee7b7', row=1, col=2,
-                      annotation_text='Esfera ref.')
+                      annotation_text='Sphere ref.')
 
         fig.update_layout(
             paper_bgcolor=_BG,
@@ -749,7 +849,7 @@ class UbermagValidator:
             margin=dict(l=60, r=20, t=70, b=100),
             barmode='group',
             title=dict(
-                text='Factores de Forma — App vs. Stoner-Wohlfarth (Osborn 1945)',
+                text='Shape Factors — App vs. Stoner-Wohlfarth (Osborn 1945)',
                 font=dict(size=13, color=_TEXT),
             ),
             legend=dict(bgcolor=_PANEL, bordercolor=_BORDER, borderwidth=1),
@@ -760,8 +860,8 @@ class UbermagValidator:
 
     def plot_Nd_radar(self) -> go.Figure:
         """
-        Gráfica polar de los factores de desmagnetización Nd_z y ΔN
-        para las 8 geometrías.
+        Polar plot of demagnetization factors Nd_z and ΔN
+        for the 8 geometries.
         """
         geom_ids = list(GEOM_Nd.keys())
         theta    = [GEOM_LABELS[g].split('(')[0].strip() for g in geom_ids]
@@ -773,8 +873,8 @@ class UbermagValidator:
 
         for i, gid in enumerate(geom_ids):
             Nd = GEOM_Nd[gid]
-            # Anisotropía de forma: ΔN = N_x - N_z
-            values = [round(Nd[0] - Nd[2], 4)]   # solo 1 punto por geometría
+            # Shape anisotropy: ΔN = N_x - N_z
+            values = [round(Nd[0] - Nd[2], 4)]   # 1 point per geometry
 
         # Radar de ΔN
         delta_N = [round(GEOM_Nd[g][0] - GEOM_Nd[g][2], 4) for g in geom_ids]
@@ -796,7 +896,7 @@ class UbermagValidator:
             r=Nd_z_closed,
             theta=theta_closed,
             fill='toself',
-            name='N_z (eje fácil)',
+            name='N_z (easy axis)',
             line=dict(color='#fb923c', width=2, dash='dash'),
             fillcolor='rgba(251, 146, 60, 0.10)',
         ))
@@ -812,7 +912,7 @@ class UbermagValidator:
                                  linecolor=_BORDER),
             ),
             title=dict(
-                text='Anisotropía de Forma  ΔN = N_⊥ – N_∥  (Osborn 1945)',
+                text='Shape Anisotropy  ΔN = N_⊥ – N_∥  (Osborn 1945)',
                 font=dict(size=13, color=_TEXT),
             ),
             legend=dict(bgcolor=_PANEL, bordercolor=_BORDER, borderwidth=1),
@@ -821,7 +921,7 @@ class UbermagValidator:
         return fig
 
     def plot_oommf_hysteresis(self, geom_id: str) -> Optional[go.Figure]:
-        """Figura del lazo de histéresis simulado con OOMMF."""
+        """Figure of the hysteresis loop simulated with OOMMF."""
         if geom_id not in self._oommf_results:
             return None
         res = self._oommf_results[geom_id]
@@ -832,10 +932,10 @@ class UbermagValidator:
         n = len(H) // 2
         fig = go.Figure()
         fig.add_trace(go.Scatter(x=H[:n], y=M[:n], mode='lines',
-                                  name='Bajada', line=dict(color='#38bdf8', width=2)))
+                                  name='Descending', line=dict(color='#38bdf8', width=2)))
         fig.add_trace(go.Scatter(x=H[n:], y=M[n:], mode='lines',
-                                  name='Subida', line=dict(color='#fb923c', width=2,
-                                                           dash='dash')))
+                                  name='Ascending', line=dict(color='#fb923c', width=2,
+                                                              dash='dash')))
         fig.add_vline(x=0,  line_dash='dot', line_color=_SUBTEXT)
         fig.add_hline(y=0,  line_dash='dot', line_color=_SUBTEXT)
         fig.add_vline(x= res['Hc_mT'], line_color='#f87171', line_width=1,
@@ -845,7 +945,7 @@ class UbermagValidator:
         fig.update_layout(
             **dict(paper_bgcolor=_BG, plot_bgcolor=_PANEL,
                    font=dict(color=_TEXT, size=11)),
-            title=dict(text=f'Histéresis OOMMF — {GEOM_LABELS[geom_id]}  '
+            title=dict(text=f'OOMMF Hysteresis — {GEOM_LABELS[geom_id]}  '
                             f'  d={self.d_nm} nm  | '
                             f' Hc={res["Hc_mT"]:.1f} mT  Mr={res["Mr"]:.3f}',
                        font=dict(size=12, color=_TEXT)),
@@ -859,7 +959,7 @@ class UbermagValidator:
 
     def summary_table(self) -> list[dict]:
         """
-        Genera tabla resumen de validación para mostrar en Streamlit.
+        Generate a validation summary table for display in Streamlit.
         """
         rows = []
         for gid in self._geom_ids:
@@ -871,8 +971,8 @@ class UbermagValidator:
             gm   = self.gmodes.get(gid, {})
 
             row = {
-                'Geometría':        GEOM_LABELS[gid].split('(')[0].strip(),
-                'Ref. física':      GEOM_LABELS[gid].split('(')[-1].replace(')','') if '(' in GEOM_LABELS[gid] else '—',
+                'Geometry':         GEOM_LABELS[gid].split('(')[0].strip(),
+                'Physical ref.':    GEOM_LABELS[gid].split('(')[-1].replace(')','') if '(' in GEOM_LABELS[gid] else '—',
                 'N_z':              f"{Nd[2]:.3f}",
                 'N_x':              f"{Nd[0]:.3f}",
                 'ΔN':               f"{Nd[0]-Nd[2]:+.3f}",
@@ -880,21 +980,21 @@ class UbermagValidator:
                 'factor_hc (SW)':   sw.get('factor_hc_sw', '—'),
                 'factor_mr (app)':  gm.get('factor_mr', '—'),
                 'factor_mr (SW)':   sw.get('factor_mr_sw', '—'),
-                'V_disc / V_esf':   f"{geom.get('V_rel', 0):.3f}" if geom else '—',
-                'OOMMF Hc (mT)':    f"{oom['Hc_mT']:.1f}" if oom else 'N/D',
-                'OOMMF Mr':         f"{oom['Mr']:.3f}"  if oom else 'N/D',
+                'V_disc / V_sph':   f"{geom.get('V_rel', 0):.3f}" if geom else '—',
+                'OOMMF Hc (mT)':    f"{oom['Hc_mT']:.1f}" if oom else 'N/A',
+                'OOMMF Mr':         f"{oom['Mr']:.3f}"  if oom else 'N/A',
             }
             rows.append(row)
         return rows
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  FACTORES VALIDADOS (para actualizar GEOMETRY_MODES en app.py)
+#  VALIDATED FACTORS (for updating GEOMETRY_MODES in app.py)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-# Factores de forma recalculados con Ubermag (Osborn + promediado multi-material)
-# Basados en: Stoner-Wohlfarth + corrección de proceso de inversión (curva SW)
-# Promedio ponderado sobre los 8 materiales del simulador
+# Shape factors recalculated with Ubermag (Osborn + multi-material averaging)
+# Based on: Stoner-Wohlfarth + reversal process correction (SW curve)
+# Weighted average over the 8 simulator materials
 
 VALIDATED_FACTORS: dict[str, dict[str, float]] = {
     'sphere': {
@@ -946,3 +1046,154 @@ VALIDATED_FACTORS: dict[str, dict[str, float]] = {
         'ref': 'Nogués et al. (1999) — exchange bias r_in/r_out=0.55',
     },
 }
+
+# ── Reference geometry: 2 Fe spheres (12nm.ipynb) ───────────────────────────
+TWO_SPHERE_REFERENCE: dict = {
+    'geometry':     '2 dipole-coupled Fe spheres',
+    'material':     'Fe',
+    'Ms_Am':        1.70e6,      # A/m
+    'K1_Jm3':       48e3,        # J/m³  (anisotropía cúbica)
+    'A_Jm':         2.1e-11,     # J/m
+    'radius_nm':    21.0,        # nm
+    'separation_nm': 6.0,        # nm  separación entre bordes
+    'E0_nm':        24.0,        # nm  distancia borde→origen
+    'box_nm':       (114, 42, 42),
+    'cell_nm':      3.0,
+    'H_max_mT':     400.0,
+    'Hc_mT':        69.2,        # medido de ciclo_histeresis.txt
+    'Hc_desc_mT':   71.9,        # descending branch
+    'Hc_asc_mT':    66.5,        # ascending branch
+    'Mr_Ms':        0.3701,      # normalized remanence
+    'runner':       'ExeOOMMFRunner',
+    'source':       '12nm.ipynb  (Galvis, Mesa et al. 2025)',
+    'n_cells_total': 38 * 14 * 14,   # 7448 celdas en la caja
+    'n_cells_mat':   int(2 * (4/3) * np.pi * (21/3)**3),  # ≈ 2×770 material cells
+}
+
+
+def generate_two_sphere_script(
+        radius_nm: float   = 21.0,
+        sep_nm:    float   = 6.0,
+        Ms_Am:     float   = 1.70e6,
+        K1_Jm3:   float   = 48e3,
+        A_Jm:     float   = 2.1e-11,
+        H_max_mT: float   = 400.0,
+        cell_nm:  float   = 3.0,
+) -> str:
+    """
+    Generate the Ubermag/oommfc code to simulate two spherical nanoparticles.
+
+    Based on 12nm.ipynb (Galvis, Mesa et al. 2025).
+    Edge-to-edge separation is sep_nm; E_0 = radius_nm + sep_nm/2.
+
+    Parameters
+    ----------
+    radius_nm : radius of each sphere (nm)
+    sep_nm    : edge-to-edge separation (nm)
+    Ms_Am     : saturation magnetization (A/m)
+    K1_Jm3   : cubic anisotropy constant (J/m³)
+    A_Jm     : exchange constant (J/m)
+    H_max_mT : maximum sweep field (mT)
+    cell_nm   : cell size (nm)
+
+    Returns
+    -------
+    str: executable Python/Ubermag script
+    """
+    E0_nm = radius_nm + sep_nm / 2.0
+    r_m   = radius_nm * 1e-9
+    E0_m  = E0_nm    * 1e-9
+    Lx_m  = (4.0 * E0_nm + 4.0 * radius_nm) * 1e-9
+    Ly_m  = (2.0 * radius_nm + 8.0) * 1e-9
+    Lz_m  = Ly_m
+    c_m   = cell_nm * 1e-9
+    H_max_T = H_max_mT * 1e-3
+
+    return f'''\
+# ── Ubermag: 2 Fe spheres  r={radius_nm:.0f} nm  sep={sep_nm:.0f} nm ────────────────────
+import micromagneticmodel as mm
+import discretisedfield   as df
+import oommfc            as oc
+import numpy             as np
+import pandas            as pd
+
+# Geometry
+radius = {r_m:.3e}   # m  (radius)
+E_0    = {E0_m:.3e}  # m  (edge-to-origin distance)
+Lx, Ly, Lz = {Lx_m:.3e}, {Ly_m:.3e}, {Lz_m:.3e}   # m
+cell = {c_m:.2e}     # m  (cell size)
+
+region = df.Region(p1=(-Lx/2, -Ly/2, -Lz/2), p2=(Lx/2, Ly/2, Lz/2))
+mesh   = df.Mesh(region=region, cell=(cell, cell, cell))
+
+# Material: Fe
+Ms  = {Ms_Am:.4e}   # A/m
+K   = {K1_Jm3:.2e}  # J/m³  (cubic anisotropy)
+A   = {A_Jm:.2e}    # J/m   (exchange)
+
+# Shape function: two spheres centered at ±E_0
+def Ms_fun(point):
+    x, y, z = point
+    r1 = (x + E_0)**2 + y**2 + z**2
+    r2 = (x - E_0)**2 + y**2 + z**2
+    return Ms if (r1 <= radius**2 or r2 <= radius**2) else 0
+
+# Micromagnetic system
+system = mm.System(name="two_spheres_fe_{radius_nm:.0f}nm_sep{sep_nm:.0f}nm")
+u1, u2 = (1, 0, 0), (0, 1, 0)
+system.dynamics = (
+    mm.Precession(gamma0=mm.consts.gamma0) + mm.Damping(alpha=1.0)
+)
+system.m = df.Field(mesh, nvdim=3, value=(1, 0, 0), norm=Ms_fun)
+
+# Hysteresis loop ±{H_max_mT:.0f} mT
+td = oc.TimeDriver()
+fd, mg, ez, ek, ex, ed = [], [], [], [], [], []
+
+H_vals = np.concatenate([
+    np.arange({H_max_T:.2f}, -{H_max_T:.2f} - 0.001, -0.010),
+    np.arange(-{H_max_T:.2f},  {H_max_T:.2f} + 0.001,  0.010),
+])
+
+for B in H_vals:
+    H = (B / mm.consts.mu0, 0, 0)
+    system.energy = (
+        mm.Exchange(A=A)
+        + mm.CubicAnisotropy(K=K, u1=u1, u2=u2)
+        + mm.Demag()
+        + mm.Zeeman(H=H)
+    )
+    td.drive(system, t=5e-9, n=10)
+
+    # Normalized magnetization in the spheres
+    valid = system.m.norm.array > 0
+    M_x  = np.sum(system.m.array[..., 0] * valid)
+    V_mat = np.sum(valid) * cell**3
+    M_norm = M_x / (Ms * np.sum(valid))
+    mg.append(M_norm)
+    fd.append(B * 1e3)   # mT
+
+    # Energies
+    Ez = oc.compute(system.energy.zeeman.energy, system)
+    Ek = oc.compute(system.energy.cubicanisotropy.energy, system)
+    Ex = oc.compute(system.energy.exchange.energy, system)
+    Ed = oc.compute(system.energy.demag.energy, system)
+    ez.append(Ez); ek.append(Ek); ex.append(Ex); ed.append(Ed)
+
+# Export
+df_out = pd.DataFrame(dict(fd=fd, mg=mg, ez=ez, ek=ek, ex=ex, ed=ed))
+df_out.to_csv("hysteresis_two_spheres.csv", index=False)
+print(df_out[["fd","mg"]].describe())
+
+# Plot
+import matplotlib.pyplot as plt
+n = len(fd) // 2
+plt.figure(figsize=(7, 5))
+plt.plot(fd[:n], mg[:n], "b-o", ms=3, label="H ↓")
+plt.plot(fd[n:], mg[n:], "r-o", ms=3, label="H ↑")
+plt.axhline(0, color="0.5", lw=0.8, ls="--")
+plt.axvline(0, color="0.5", lw=0.8, ls="--")
+plt.xlabel("H (mT)"); plt.ylabel("M/Ms")
+plt.title("2 Fe spheres  r={radius_nm:.0f} nm  sep={sep_nm:.0f} nm")
+plt.legend(); plt.tight_layout(); plt.show()
+'''

@@ -1,16 +1,16 @@
 """
-report.py — Generador de Reportes PDF
-Simulador Micromagnético ML · Fase 3
+report.py — Scientific PDF Report Generator
+Micromagnetic ML Simulator · Phase 5
 
-Genera un reporte científico en PDF con:
-  · Portada con metadata
-  · Parámetros físicos del material
-  · Tabla de predicciones ML (esfera vs cuboide)
-  · Figura de simulación embebida (PNG)
-  · Paisaje de energía
-  · Sección de referencias
+Generates a scientific PDF report containing:
+  · Cover page with simulation metadata
+  · Physical parameters of the material
+  · ML prediction table (all geometries)
+  · Embedded simulation figures (PNG)
+  · Mathematical foundations section
+  · SQLite simulation history table
 
-Dependencia: reportlab
+Dependency: reportlab
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ from __future__ import annotations
 import io
 from datetime import datetime
 from typing import Any
+from xml.sax.saxutils import escape as _xml_escape
 
 import matplotlib
 matplotlib.use('Agg')
@@ -35,7 +36,16 @@ from reportlab.platypus        import (
 )
 from reportlab.platypus.flowables import HRFlowable
 
-# ─── Paleta de colores ────────────────────────────────────────────────────────
+def _esc(value: Any) -> str:
+    """Escape a value for safe use inside ReportLab Paragraph (XML context).
+
+    ReportLab interprets XML tags inside Paragraph text. Without escaping,
+    user-controlled strings could inject markup (e.g. ``<b>``, ``<br/>``).
+    """
+    return _xml_escape(str(value))
+
+
+# ─── Color palette ───────────────────────────────────────────────────────────
 C_DARK   = colors.HexColor('#0f172a')
 C_PANEL  = colors.HexColor('#1e293b')
 C_ACCENT = colors.HexColor('#38bdf8')
@@ -44,10 +54,9 @@ C_GRAY   = colors.HexColor('#64748b')
 C_WHITE  = colors.white
 C_WARN   = colors.HexColor('#f59e0b')
 
-# ─── Estilos ─────────────────────────────────────────────────────────────────
+# ─── Styles ───────────────────────────────────────────────────────────────────
 
 def _build_styles() -> dict:
-    base = getSampleStyleSheet()
     styles = {
         'title': ParagraphStyle(
             'title',
@@ -96,7 +105,7 @@ def _build_styles() -> dict:
     return styles
 
 
-# ─── Estilos de tabla ─────────────────────────────────────────────────────────
+# ─── Table styles ─────────────────────────────────────────────────────────────
 
 _TABLE_STYLE = TableStyle([
     ('BACKGROUND',  (0, 0), (-1, 0),  C_DARK),
@@ -133,12 +142,12 @@ _PARAMS_STYLE = TableStyle([
 ])
 
 
-# ─── Cabecera / pie de página ─────────────────────────────────────────────────
+# ─── Page header / footer ─────────────────────────────────────────────────────
 
 def _header_footer(canvas, doc):
     canvas.saveState()
     w, h = A4
-    # Banda superior
+    # Top band
     canvas.setFillColor(C_DARK)
     canvas.rect(0, h - 1.2 * cm, w, 1.2 * cm, fill=1, stroke=0)
     canvas.setFillColor(C_ACCENT)
@@ -146,27 +155,27 @@ def _header_footer(canvas, doc):
     canvas.setFillColor(C_WHITE)
     canvas.setFont('Helvetica-Bold', 9)
     canvas.drawString(1.0 * cm, h - 0.78 * cm,
-                      'Simulador Micromagnético ML  ·  Fase 3  ·  Reporte de Simulación')
+                      'Micromagnetic ML Simulator  ·  Phase 5  ·  Simulation Report')
     canvas.setFont('Helvetica', 8)
     canvas.drawRightString(w - 1.0 * cm, h - 0.78 * cm,
                            datetime.now().strftime('%d/%m/%Y %H:%M'))
-    # Pie
+    # Footer
     canvas.setFillColor(colors.HexColor('#e2e8f0'))
     canvas.rect(0, 0, w, 0.8 * cm, fill=1, stroke=0)
     canvas.setFillColor(C_GRAY)
     canvas.setFont('Helvetica', 7.5)
     canvas.drawString(1.0 * cm, 0.28 * cm,
-                      'Basado en datos de Galvis, Mesa et al. — '
+                      'Based on data from Galvis, Mesa et al. — '
                       'Results in Physics (2025) & Comp. Mat. Sci. (2024)')
     canvas.drawRightString(w - 1.0 * cm, 0.28 * cm,
-                           f'Página {doc.page}')
+                           f'Page {doc.page}')
     canvas.restoreState()
 
 
-# ─── Constructor de figura matplotlib ────────────────────────────────────────
+# ─── Matplotlib figure helper ─────────────────────────────────────────────────
 
 def _fig_to_image_flowable(fig: plt.Figure, width: float, height: float) -> Image:
-    """Convierte una figura matplotlib en un flowable de ReportLab."""
+    """Convert a matplotlib figure to a ReportLab Image flowable."""
     buf = io.BytesIO()
     fig.savefig(buf, format='png', dpi=150, bbox_inches='tight',
                 facecolor='#0f172a')
@@ -175,7 +184,7 @@ def _fig_to_image_flowable(fig: plt.Figure, width: float, height: float) -> Imag
     return Image(buf, width=width, height=height, kind='proportional')
 
 
-# ─── Generador principal ─────────────────────────────────────────────────────
+# ─── Main report generator ────────────────────────────────────────────────────
 
 def generate_report(
     mat_id: str,
@@ -190,24 +199,28 @@ def generate_report(
     noise_level: float = 0.008,
     extrapolation: bool = False,
     history_rows: list[dict] | None = None,
+    T_K: float = 300.0,
+    geom_name: str = '',
 ) -> bytes:
     """
-    Genera el reporte PDF completo y retorna los bytes del documento.
+    Generate the full PDF report and return its bytes.
 
-    Parámetros
+    Parameters
     ----------
-    mat_id       : clave del material ('fe', 'permalloy', …)
-    mat_name     : nombre legible del material
-    d_nm         : tamaño de partícula seleccionado
-    preds        : {'sphere': (Hc, Mr), 'cuboid': (Hc, Mr)}
-    mat_params   : dict con K1, A, Ms, alpha, lambda_ex, Tc
-    mat_range    : [lo, hi] nm rango de entrenamiento
-    field_max    : campo máximo (mT)
-    fig_main     : figura matplotlib principal (GridSpec 2×2)
-    fig_energy   : figura matplotlib de energía (opcional)
-    noise_level  : nivel de ruido LLG usado
-    extrapolation: True si el tamaño está fuera del rango
-    history_rows : filas del historial SQLite para incluir en el reporte
+    mat_id       : material key ('fe', 'permalloy', …)
+    mat_name     : human-readable material name
+    d_nm         : selected particle size [nm]
+    preds        : {'sphere': (Hc, Mr), …}  — predictions per geometry
+    mat_params   : dict with K1, A, Ms, alpha, lambda_ex, Tc
+    mat_range    : [lo, hi] nm training range
+    field_max    : maximum applied field [mT]
+    fig_main     : main matplotlib figure (GridSpec 2×2) or None
+    fig_energy   : energy landscape matplotlib figure or None
+    noise_level  : LLG noise level used in the simulation
+    extrapolation: True if the selected size is outside the training range
+    history_rows : SQLite history rows to include in the report (max 30)
+    T_K          : simulation temperature [K]
+    geom_name    : active geometry name (for cover metadata)
     """
     buf_pdf = io.BytesIO()
     styles  = _build_styles()
@@ -227,90 +240,106 @@ def generate_report(
 
     story: list = []
 
-    # ── Portada ───────────────────────────────────────────────────────────────
+    # ── Cover page ────────────────────────────────────────────────────────────
     story.append(Spacer(1, 1.5 * cm))
-    story.append(Paragraph('Reporte de Simulación Micromagnética', styles['title']))
-    story.append(Paragraph('Motor ML · GradientBoostingRegressor · LLG Simplificado',
-                            styles['subtitle']))
+    story.append(Paragraph('Micromagnetic Simulation Report', styles['title']))
+    story.append(Paragraph(
+        'ML Engine · GBR + RF + MLP Ensemble · Simplified LLG',
+        styles['subtitle']))
     story.append(Spacer(1, 0.4 * cm))
     story.append(HRFlowable(width='100%', thickness=2, color=C_ACCENT,
                              spaceAfter=12))
 
-    # Ficha de identificación
-    ficha_data = [
-        ['Campo', 'Valor'],
-        ['Material',         mat_name],
-        ['ID Material',      mat_id.upper()],
-        ['Tamaño analizado', f'{d_nm:.1f} nm'],
-        ['Rango ML',         f'{mat_range[0]}–{mat_range[1]} nm'],
-        ['Campo máximo',     f'{field_max:.0f} mT'],
-        ['Ruido LLG',        f'{noise_level:.3f}'],
-        ['Extrapolación',    '⚠ SÍ — predicción fuera de rango' if extrapolation else 'No'],
-        ['Fecha / Hora',     datetime.now().strftime('%d/%m/%Y %H:%M:%S')],
-        ['Versión',          'v2.0 — Fase 3'],
+    # Identification sheet
+    cover_data = [
+        ['Field', 'Value'],
+        ['Material',          _esc(mat_name)],
+        ['Material ID',       _esc(mat_id.upper())],
+        ['Particle size',     f'{d_nm:.1f} nm'],
+        ['Active geometry',   _esc(geom_name) if geom_name else '—'],
+        ['Temperature',       f'{T_K:.0f} K'],
+        ['ML training range', f'{mat_range[0]}–{mat_range[1]} nm'],
+        ['Max field',         f'{field_max:.0f} mT'],
+        ['LLG noise level',   f'{noise_level:.3f}'],
+        ['Extrapolation',     '⚠ YES — prediction outside range' if extrapolation else 'No'],
+        ['Date / Time',       datetime.now().strftime('%d/%m/%Y %H:%M:%S')],
+        ['Version',           'v5.0 — Phase 5 (GBR + RF + MLP Ensemble)'],
     ]
-    tbl_ficha = Table(ficha_data, colWidths=[5 * cm, 10.5 * cm])
-    tbl_ficha.setStyle(_TABLE_STYLE)
-    story.append(tbl_ficha)
+    tbl_cover = Table(cover_data, colWidths=[5 * cm, 10.5 * cm])
+    tbl_cover.setStyle(_TABLE_STYLE)
+    story.append(tbl_cover)
     story.append(Spacer(1, 0.6 * cm))
 
     if extrapolation:
         story.append(Paragraph(
-            f'⚠ ADVERTENCIA: El tamaño {d_nm:.1f} nm está fuera del rango '
-            f'de entrenamiento [{mat_range[0]}–{mat_range[1]} nm]. '
-            'Los resultados son una extrapolación y deben interpretarse con precaución.',
+            f'⚠ WARNING: Size {d_nm:.1f} nm is outside the training range '
+            f'[{mat_range[0]}–{mat_range[1]} nm]. '
+            'Results are extrapolations and should be interpreted with caution.',
             styles['warn']))
 
-    # ── Figura principal ──────────────────────────────────────────────────────
-    story.append(Paragraph('1. Simulación — Histéresis, Energía y Tabla ML',
-                            styles['section']))
+    # ── Main figure ───────────────────────────────────────────────────────────
+    story.append(Paragraph(
+        '1. Simulation — Hysteresis, Energy Landscape & ML Table',
+        styles['section']))
 
     if fig_main is not None:
-        story.append(_fig_to_image_flowable(fig_main,
-                     width=w - 2 * margin, height=12 * cm))
+        story.append(_fig_to_image_flowable(
+            fig_main, width=w - 2 * margin, height=12 * cm))
         story.append(Paragraph(
-            f'Figura 1. Simulación micromagnética completa para {mat_name} '
-            f'a {d_nm:.0f} nm. (a) Lazo de histéresis LLG para esfera y cuboide. '
-            '(b) Paisaje de energía (Zeeman, Intercambio, Desmagnetización, Anisotropía). '
-            '(c) Tabla comparativa de parámetros ML.',
+            f'Figure 1. Full micromagnetic simulation for {_esc(mat_name)} at {d_nm:.0f} nm. '
+            '(a) LLG hysteresis loop. '
+            '(b) Magnetic energy landscape (Zeeman, Exchange, Demagnetization, Anisotropy). '
+            '(c) ML parameter comparison table across all geometries.',
             styles['caption']))
 
-    # ── Predicciones ML ───────────────────────────────────────────────────────
-    story.append(Paragraph('2. Predicciones del Modelo ML', styles['section']))
+    # Optional energy figure
+    if fig_energy is not None:
+        story.append(Spacer(1, 0.3 * cm))
+        story.append(_fig_to_image_flowable(
+            fig_energy, width=w - 2 * margin, height=7 * cm))
+        story.append(Paragraph(
+            'Figure 2. Interactive energy landscape — individual energy contributions '
+            'as a function of applied field H.',
+            styles['caption']))
+
+    # ── ML predictions ────────────────────────────────────────────────────────
+    story.append(Paragraph('2. ML Model Predictions', styles['section']))
     story.append(Paragraph(
-        f'La siguiente tabla muestra los valores de campo coercitivo Hc (mT) y '
-        f'magnetización de remanencia Mr/Ms predichos por el modelo '
-        f'GradientBoostingRegressor para {mat_name} a {d_nm:.1f} nm.',
+        f'Coercive field Hc (mT) and remanence ratio Mr/Ms predicted by the '
+        f'GBR + RF + MLP ensemble for {_esc(mat_name)} at {d_nm:.1f} nm, '
+        f'T = {T_K:.0f} K.',
         styles['body']))
 
-    pred_data = [['Geometría', 'Hc (mT)', 'Mr/Ms', 'Estado']]
-    for geom_key, geom_label in [('sphere', 'Esfera'), ('cuboid', 'Cuboide')]:
-        if geom_key in preds:
-            Hc_v, Mr_v = preds[geom_key]
-            pred_data.append([
-                geom_label,
-                f'{Hc_v:.2f}',
-                f'{Mr_v:.4f}',
-                '⚠ Extrapolación' if extrapolation else '✓ Interpolación',
-            ])
+    pred_data = [['Geometry', 'Hc (mT)', 'Mr/Ms', 'Status']]
+    for geom_key, geom_label in preds.items():
+        if isinstance(geom_label, tuple):
+            Hc_v, Mr_v = geom_label
+        else:
+            continue
+        pred_data.append([
+            _esc(geom_key),
+            f'{Hc_v:.2f}',
+            f'{Mr_v:.4f}',
+            '⚠ Extrapolation' if extrapolation else '✓ Interpolation',
+        ])
     tbl_pred = Table(pred_data,
                      colWidths=[4 * cm, 3.5 * cm, 3.5 * cm, 4.5 * cm])
     tbl_pred.setStyle(_TABLE_STYLE)
     story.append(tbl_pred)
     story.append(Spacer(1, 0.4 * cm))
 
-    # ── Parámetros físicos ────────────────────────────────────────────────────
-    story.append(Paragraph('3. Parámetros Físicos del Material', styles['section']))
+    # ── Physical parameters ───────────────────────────────────────────────────
+    story.append(Paragraph('3. Material Physical Parameters', styles['section']))
 
     param_labels = {
-        'K1_kJ_m3':    'Constante de anisotropía  K₁ (kJ/m³)',
-        'A_pJ_m':      'Constante de intercambio  A (pJ/m)',
-        'Ms_MA_m':     'Magnetización de saturación  Ms (MA/m)',
-        'alpha':       'Factor de amortiguamiento  α (Gilbert)',
-        'lambda_ex_nm':'Longitud de intercambio  λₑₓ (nm)',
-        'Tc_K':        'Temperatura de Curie  Tc (K)',
+        'K1_kJ_m3':     'Anisotropy constant  K₁ (kJ/m³)',
+        'A_pJ_m':       'Exchange constant  A (pJ/m)',
+        'Ms_MA_m':      'Saturation magnetization  Ms (MA/m)',
+        'alpha':        'Gilbert damping factor  α',
+        'lambda_ex_nm': 'Exchange length  λₑₓ (nm)',
+        'Tc_K':         'Curie temperature  Tc (K)',
     }
-    params_data = [['Parámetro', 'Valor']] + [
+    params_data = [['Parameter', 'Value']] + [
         [label, str(mat_params.get(key, '—'))]
         for key, label in param_labels.items()
     ]
@@ -319,60 +348,62 @@ def generate_report(
     story.append(tbl_params)
     story.append(Spacer(1, 0.4 * cm))
 
-    # ── Ecuaciones clave ──────────────────────────────────────────────────────
-    story.append(Paragraph('4. Fundamentos Matemáticos', styles['section']))
+    # ── Key equations ─────────────────────────────────────────────────────────
+    story.append(Paragraph('4. Mathematical Foundations', styles['section']))
     eqs = [
-        ('Ecuación de Landau-Lifshitz-Gilbert (LLG):',
+        ('Landau-Lifshitz-Gilbert equation (LLG):',
          'dM/dt = –γ(M × H_eff) + (α/Ms)[M × dM/dt]'),
-        ('Energía de Zeeman:',
+        ('Zeeman energy:',
          'E_Z = –μ₀ Ms (M/Ms) · H · V'),
-        ('Energía de intercambio:',
+        ('Exchange energy:',
          'E_ex = A ∫|∇m|² dV'),
-        ('Energía de anisotropía uniaxial:',
+        ('Uniaxial anisotropy energy:',
          'E_K = K₁ V sin²(θ)'),
-        ('Histéresis LLG simplificada (rama ↑):',
+        ('Simplified LLG hysteresis (ascending branch):',
          'M(H) = Mr · tanh[(H + Hc) / Hc]  + ε(σ)'),
+        ('Callen-Callen thermal scaling:',
+         'Hc(T) = Hc(T₀) · [ms(T)/ms(T₀)]^(7/3),   ms(T) = (1 – (T/Tc)^1.5)^(1/3)'),
+        ('SPM energy barrier (Néel criterion):',
+         'E_b = K₁(T) · V,   K₁(T) = K₁(0) · ms(T)^(10/3)   →   SPM if E_b/k_BT < 25'),
     ]
     for label, eq in eqs:
         story.append(Paragraph(label, styles['body']))
         story.append(Paragraph(eq, styles['mono']))
         story.append(Spacer(1, 0.15 * cm))
 
-    # ── Historial de sesión ───────────────────────────────────────────────────
+    # ── Simulation history ────────────────────────────────────────────────────
     if history_rows:
         story.append(PageBreak())
-        story.append(Paragraph('5. Historial de Simulaciones (Sesión)', styles['section']))
+        story.append(Paragraph('5. Simulation History (SQLite)', styles['section']))
         story.append(Paragraph(
-            f'Se registraron {len(history_rows)} simulaciones en la base de datos SQLite '
-            'durante la sesión actual.',
+            f'{len(history_rows)} simulation(s) recorded in the SQLite database.',
             styles['body']))
 
-        hist_headers = ['#', 'Hora', 'Material', 'Tamaño (nm)',
-                         'Hc Esfera', 'Mr Esfera', 'Extrapol.']
+        hist_headers = ['#', 'Time', 'Material', 'Size (nm)',
+                        'Hc (mT)', 'Mr/Ms', 'Extrapol.']
         hist_data = [hist_headers]
-        for i, row in enumerate(history_rows[:30], 1):   # máx 30 filas
+        for i, row in enumerate(history_rows[:30], 1):
             ts = row.get('timestamp', '')[:16].replace('T', ' ')
             hist_data.append([
                 str(i),
-                ts,
-                row.get('material', '—'),
-                f"{row.get('size_nm', '—'):.1f}",
-                f"{row.get('hc_sphere', '—'):.1f}" if row.get('hc_sphere') else '—',
-                f"{row.get('mr_sphere', '—'):.3f}" if row.get('mr_sphere') else '—',
+                _esc(ts),
+                _esc(row.get('material', '—')),
+                f"{row.get('size_nm', 0):.1f}",
+                f"{row.get('hc_sphere', 0):.1f}" if row.get('hc_sphere') else '—',
+                f"{row.get('mr_sphere', 0):.3f}" if row.get('mr_sphere') else '—',
                 '⚠' if row.get('extrapolation') else '✓',
             ])
 
-        col_w = [0.8, 2.4, 4.0, 2.2, 2.2, 2.2, 1.6]
-        col_w = [x * cm for x in col_w]
+        col_w = [x * cm for x in [0.8, 2.4, 4.0, 2.2, 2.2, 2.2, 1.6]]
         tbl_hist = Table(hist_data, colWidths=col_w, repeatRows=1)
         tbl_hist.setStyle(_TABLE_STYLE)
         story.append(tbl_hist)
 
-    # ── Referencias ───────────────────────────────────────────────────────────
+    # ── References ───────────────────────────────────────────────────────────
     story.append(Spacer(1, 0.6 * cm))
     story.append(HRFlowable(width='100%', thickness=1,
                              color=colors.HexColor('#cbd5e1'), spaceAfter=8))
-    story.append(Paragraph('Referencias', styles['section']))
+    story.append(Paragraph('References', styles['section']))
     refs = [
         '[1] Galvis, Mesa, et al. "Micromagnetic simulation of Fe nanoparticles." '
         '<i>Results in Physics</i>, 2025.',
@@ -382,7 +413,10 @@ def generate_report(
         'permeability in ferromagnetic bodies." <i>Phys. Z. Sowjetunion</i>, 8:153, 1935.',
         '[4] Gilbert, T. L. "A phenomenological theory of damping in ferromagnetic materials." '
         '<i>IEEE Trans. Magn.</i>, 40(6):3443–3449, 2004.',
-        '[5] Pedregosa et al. "Scikit-learn: Machine learning in Python." '
+        '[5] Callen, H. B. & Callen, E. "The present status of the temperature dependence '
+        'of magnetocrystalline anisotropy, and the l(l+1)/2 power law." '
+        '<i>J. Phys. Chem. Solids</i>, 27(8):1271–1285, 1966.',
+        '[6] Pedregosa et al. "Scikit-learn: Machine learning in Python." '
         '<i>JMLR</i>, 12:2825–2830, 2011.',
     ]
     for ref in refs:
