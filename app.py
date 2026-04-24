@@ -2199,7 +2199,7 @@ with tab_sim:
         _lam_ex = np.sqrt(2 * _A_Jm / (_mu0 * _Ms_Am ** 2)) * 1e9  # nm
 
         # Magnetocrystalline anisotropy field H_K (mT)
-        _HK_mT  = (2 * _K1_Jm3 / (_mu0 * _Ms_Am)) * 1e3 if _Ms_Am > 0 else 0
+        _HK_mT = (2 * _K1_Jm3 / _Ms_Am) * 1e3 if _Ms_Am > 0 else 0
 
         # Demagnetizing field correction  ΔH_dem (mT)  via shape factor Nd_z
         _Nd_z   = float(gm.get('Nd_z', 1.0 / 3.0))
@@ -2232,69 +2232,72 @@ with tab_sim:
             return {'Parameter': f'── {title} ──', 'Value': '', 'Unit': '', 'Notes': ''}
 
         _rows = [
-            # ── Identity ─────────────────────────────────────────────────────
-            _section('MATERIAL & GEOMETRY'),
-            {'Parameter': 'Material',         'Value': mat['name'],         'Unit': '—',    'Notes': mat.get('category','')},
-            {'Parameter': 'Formula',           'Value': mat.get('formula',''), 'Unit': '—', 'Notes': ''},
-            {'Parameter': 'Geometry',          'Value': gm['name'],          'Unit': '—',   'Notes': gm.get('description','')},
-            {'Parameter': 'Diameter',          'Value': f'{d_nm:.1f}',       'Unit': 'nm',  'Notes': f'Range {lo}–{hi} nm'},
-            {'Parameter': 'Volume',            'Value': f'{_V_nm3:.2f}',     'Unit': 'nm³', 'Notes': f'Sphere: V = (4/3)π(d/2)³'},
+    # ── Identity ─────────────────────────────────────────────────────
+    _section('MATERIAL & GEOMETRY'),
+    {'Parameter': 'Material',          'Value': mat['name'],              'Unit': '—',    'Notes': mat.get('category','')},
+    {'Parameter': 'Formula',           'Value': mat.get('formula',''),    'Unit': '—',    'Notes': ''},
+    {'Parameter': 'Geometry',          'Value': gm['name'],               'Unit': '—',    'Notes': gm.get('description','')},
+    {'Parameter': 'Diameter',          'Value': f'{d_nm:.1f}',            'Unit': 'nm',   'Notes': f'Range {lo}–{hi} nm'},
+    {'Parameter': 'Volume',            'Value': f'{_V_nm3:.2f}',          'Unit': 'nm³',  'Notes': 'Sphere: V = (4/3)π(d/2)³'},
 
-            # ── Physical parameters ───────────────────────────────────────────
-            _section('PHYSICAL PARAMETERS'),
-            {'Parameter': 'Ms',                'Value': f'{_p["Ms_MA_m"]:.3f}','Unit': 'MA/m','Notes': 'Saturation magnetization'},
-            {'Parameter': 'K₁',                'Value': f'{_p["K1_kJ_m3"]:.1f}','Unit': 'kJ/m³','Notes': 'Anisotropy constant'},
-            {'Parameter': 'A',                 'Value': f'{_p["A_pJ_m"]:.1f}',  'Unit': 'pJ/m', 'Notes': 'Exchange stiffness'},
-            {'Parameter': 'α (LLG)',           'Value': f'{_alpha:.4f}',        'Unit': '—',    'Notes': 'Gilbert damping'},
-            {'Parameter': 'λ_ex (material)',   'Value': f'{_lam_nm:.2f}',       'Unit': 'nm',   'Notes': 'Exchange length (stored)'},
-            {'Parameter': 'λ_ex (computed)',   'Value': f'{_lam_ex:.2f}',       'Unit': 'nm',   'Notes': '√(2A / μ₀Ms²)'},
-            {'Parameter': 'Tc',                'Value': f'{_Tc:.0f}',           'Unit': 'K',    'Notes': 'Curie temperature'},
+    # ── Physical parameters ──────────────────────────────────────────
+    _section('PHYSICAL PARAMETERS'),
+    {'Parameter': 'Ms (0 K)',         'Value': f'{_p["Ms_MA_m"]:.3f}',   'Unit': 'MA/m', 'Notes': 'Saturation magnetization at reference'},
+    {'Parameter': 'K₁',               'Value': f'{_p["K1_kJ_m3"]:.1f}',  'Unit': 'kJ/m³','Notes': 'Anisotropy constant'},
+    {'Parameter': 'A',                'Value': f'{_p["A_pJ_m"]:.1f}',    'Unit': 'pJ/m', 'Notes': 'Exchange stiffness'},
+    {'Parameter': 'α (LLG)',          'Value': f'{_alpha:.4f}',          'Unit': '—',    'Notes': 'Gilbert damping'},
+    {'Parameter': 'λ_ex (stored)',    'Value': f'{_lam_nm:.2f}',         'Unit': 'nm',   'Notes': 'Material database'},
+    {'Parameter': 'λ_ex (computed)',  'Value': f'{_lam_ex:.2f}',         'Unit': 'nm',   'Notes': '√(2A / μ₀Ms²)'},
+    {'Parameter': 'Tc',               'Value': f'{_Tc:.0f}',             'Unit': 'K',    'Notes': 'Curie temperature'},
 
-            # ── Simulation conditions ─────────────────────────────────────────
-            _section('SIMULATION CONDITIONS'),
-            {'Parameter': 'Temperature',       'Value': f'{T_K:.1f}',          'Unit': 'K',    'Notes': ''},
-            {'Parameter': 'T / Tc',            'Value': f'{_T_safe/_Tc_safe:.4f}','Unit':'—',  'Notes': 'Reduced temperature'},
-            {'Parameter': 'ms(T) / ms(0)',     'Value': f'{_ms_T:.4f}',         'Unit': '—',   'Notes': 'Callen-Callen: (1–(T/Tc)^1.5)^(1/3)'},
-            {'Parameter': 'Temp. correction',  'Value': 'ON' if use_temp_correction else 'OFF','Unit':'—','Notes': ''},
-            {'Parameter': 'Noise level',       'Value': f'{noise_level:.0%}',   'Unit': '—',   'Notes': 'Synthesis noise added to training'},
-            {'Parameter': 'Field max',         'Value': f'{mat["field_max"]}',  'Unit': 'mT',  'Notes': 'Sweep range'},
-            {'Parameter': 'Extrapolation',     'Value': '⚠ Yes' if is_extrapolation(d_nm, mat_id) else 'No','Unit':'—','Notes': 'Outside training range'},
-            {'Parameter': 'Compute time',      'Value': f'{elapsed_ms:.1f}',    'Unit': 'ms',  'Notes': 'build_main_figure()'},
+    # ── Simulation conditions ────────────────────────────────────────
+    _section('SIMULATION CONDITIONS'),
+    {'Parameter': 'Temperature',      'Value': f'{T_K:.1f}',             'Unit': 'K',    'Notes': ''},
+    {'Parameter': 'T / Tc',           'Value': f'{_T_safe/_Tc_safe:.4f}','Unit': '—',    'Notes': 'Reduced temperature'},
+    {'Parameter': 'ms(T)/ms(0)',      'Value': f'{_ms_T:.4f}',           'Unit': '—',    'Notes': 'Callen-Callen thermal factor'},
+    {'Parameter': 'Temp. correction', 'Value': 'ON' if use_temp_correction else 'OFF', 'Unit': '—', 'Notes': ''},
+    {'Parameter': 'Noise level',      'Value': f'{noise_level:.0%}',     'Unit': '—',    'Notes': 'Synthetic noise in training'},
+    {'Parameter': 'Field max',        'Value': f'{mat["field_max"]}',    'Unit': 'mT',   'Notes': 'Sweep range'},
+    {'Parameter': 'Extrapolation',    'Value': '⚠ Yes' if is_extrapolation(d_nm, mat_id) else 'No', 'Unit': '—', 'Notes': 'Outside training range'},
+    {'Parameter': 'Compute time',     'Value': f'{elapsed_ms:.1f}',      'Unit': 'ms',   'Notes': 'build_main_figure()'},
 
-            # ── Geometry (Nd) ─────────────────────────────────────────────────
-            _section('GEOMETRY — DEMAGNETIZATION'),
-            {'Parameter': 'Nd_z (easy axis)',  'Value': f'{_Nd_z:.4f}',         'Unit': '—',   'Notes': 'Osborn/Chen/Aharoni analytical'},
-            {'Parameter': 'f_Hc',             'Value': f'{gm["factor_hc"]:.3f}','Unit': '—',   'Notes': 'Shape factor for Hc'},
-            {'Parameter': 'f_Mr',             'Value': f'{gm["factor_mr"]:.3f}','Unit': '—',   'Notes': 'Shape factor for Mr'},
-            {'Parameter': 'H_dem (Nd·μ₀Ms)',  'Value': f'{_Hdem_mT:.1f}',       'Unit': 'mT',  'Notes': 'Demagnetizing field estimate'},
+    # ── Geometry (Nd) ────────────────────────────────────────────────
+    _section('GEOMETRY — DEMAGNETIZATION'),
+    {'Parameter': 'Nd_z',            'Value': f'{_Nd_z:.4f}',            'Unit': '—',    'Notes': 'Easy-axis demag factor'},
+    {'Parameter': 'f_Hc',            'Value': f'{gm["factor_hc"]:.3f}',  'Unit': '—',    'Notes': 'Shape factor for Hc'},
+    {'Parameter': 'f_Mr',            'Value': f'{gm["factor_mr"]:.3f}',  'Unit': '—',    'Notes': 'Shape factor for Mr'},
+    {'Parameter': 'H_dem',           'Value': f'{_Hdem_mT:.1f}',         'Unit': 'mT',   'Notes': 'Nd·μ₀Ms(T)'},
 
-            # ── Physics-derived ───────────────────────────────────────────────
-            _section('DERIVED PHYSICS'),
-            {'Parameter': 'H_K (anisotropy)', 'Value': f'{_HK_mT:.1f}',         'Unit': 'mT',  'Notes': '2K₁/(μ₀Ms)'},
-            {'Parameter': 'H_SW (Stoner-W.)', 'Value': f'{_H_sw_mT:.1f}',       'Unit': 'mT',  'Notes': 'H_K + ΔN·μ₀Ms (single-domain)'},
-            {'Parameter': 'E_b (barrier)',    'Value': f'{_Eb_J:.3e}',           'Unit': 'J',   'Notes': 'K₁·V'},
-            {'Parameter': 'E_b / k_BT',       'Value': f'{_barrier:.2f}',        'Unit': '—',   'Notes': 'Thermal stability ratio'},
-            {'Parameter': 'SPM regime',       'Value': '⚠ Yes (E_b/k_BT < 25)' if _is_spm else 'No','Unit':'—','Notes': 'Néel criterion'},
+    # ── Derived physics ──────────────────────────────────────────────
+    _section('DERIVED PHYSICS'),
+    {'Parameter': 'H_K',             'Value': f'{_HK_mT:.1f}',           'Unit': 'mT',   'Notes': '2K₁/(μ₀Ms(T))'},
+    {'Parameter': 'H_SW',            'Value': f'{_H_sw_mT:.1f}',         'Unit': 'mT',   'Notes': 'Stoner-Wohlfarth estimate'},
+    {'Parameter': 'E_b',             'Value': f'{_Eb_J:.3e}',            'Unit': 'J',    'Notes': 'K₁·V'},
+    {'Parameter': 'E_b / kBT',       'Value': f'{_barrier:.2f}',         'Unit': '—',    'Notes': 'Thermal stability ratio'},
+    {'Parameter': 'SPM regime',      'Value': '⚠ Yes (E_b/kBT < 25)' if _is_spm else 'No', 'Unit': '—', 'Notes': 'Néel criterion'},
 
-            # ── Per-model ML predictions ──────────────────────────────────────
-            _section('ML PREDICTIONS — RAW (sphere reference)'),
-            {'Parameter': 'GBR  Hc',          'Value': f'{_all_preds["GBR"]["Hc"]:.2f}', 'Unit':'mT','Notes': 'Gradient Boosting'},
-            {'Parameter': 'GBR  Mr',          'Value': f'{_all_preds["GBR"]["Mr"]:.4f}', 'Unit':'—', 'Notes': ''},
-            {'Parameter': 'RF   Hc',          'Value': f'{_all_preds["RF"]["Hc"]:.2f}',  'Unit':'mT','Notes': 'Random Forest'},
-            {'Parameter': 'RF   Mr',          'Value': f'{_all_preds["RF"]["Mr"]:.4f}',  'Unit':'—', 'Notes': ''},
-            {'Parameter': 'MLP  Hc',          'Value': f'{_all_preds["MLP"]["Hc"]:.2f}', 'Unit':'mT','Notes': 'Neural Network'},
-            {'Parameter': 'MLP  Mr',          'Value': f'{_all_preds["MLP"]["Mr"]:.4f}', 'Unit':'—', 'Notes': ''},
-            {'Parameter': 'Ensemble Hc (raw)','Value': f'{_all_preds["Ensemble"]["Hc"]:.2f}','Unit':'mT','Notes': 'Weighted avg by R² CV'},
-            {'Parameter': 'Ensemble Mr (raw)','Value': f'{_all_preds["Ensemble"]["Mr"]:.4f}','Unit':'—', 'Notes': ''},
+    # ── ML predictions ───────────────────────────────────────────────
+    _section('ML PREDICTIONS — RAW (sphere reference)'),
+    {'Parameter': 'GBR Hc',          'Value': f'{_all_preds["GBR"]["Hc"]:.2f}',      'Unit': 'mT', 'Notes': 'Gradient Boosting'},
+    {'Parameter': 'GBR Mr',          'Value': f'{_all_preds["GBR"]["Mr"]:.4f}',      'Unit': '—',  'Notes': ''},
+    {'Parameter': 'RF Hc',           'Value': f'{_all_preds["RF"]["Hc"]:.2f}',       'Unit': 'mT', 'Notes': 'Random Forest'},
+    {'Parameter': 'RF Mr',           'Value': f'{_all_preds["RF"]["Mr"]:.4f}',       'Unit': '—',  'Notes': ''},
+    {'Parameter': 'MLP Hc',          'Value': f'{_all_preds["MLP"]["Hc"]:.2f}',      'Unit': 'mT', 'Notes': 'Neural Network'},
+    {'Parameter': 'MLP Mr',          'Value': f'{_all_preds["MLP"]["Mr"]:.4f}',      'Unit': '—',  'Notes': ''},
+    {'Parameter': 'Ensemble Hc',     'Value': f'{_all_preds["Ensemble"]["Hc"]:.2f}', 'Unit': 'mT', 'Notes': 'Weighted avg by R² CV'},
+    {'Parameter': 'Ensemble Mr',     'Value': f'{_all_preds["Ensemble"]["Mr"]:.4f}', 'Unit': '—',  'Notes': ''},
 
-            # ── Final result ──────────────────────────────────────────────────
-            _section('FINAL RESULT (geometry + temperature corrected)'),
-            {'Parameter': 'Hc',               'Value': f'{Hc_val:.2f}',         'Unit': 'mT',  'Notes': f'±{_sHc:.2f} mT  (1σ RF variance)'},
-            {'Parameter': 'Mr / Ms',          'Value': f'{Mr_val:.4f}',          'Unit': '—',   'Notes': f'±{_sMr:.4f}  (1σ)'},
-            {'Parameter': 'Hc · f_Hc',        'Value': f'{Hc_val / max(_geom_factor_hc,1e-6):.2f}','Unit':'mT','Notes': 'Back-projected sphere value'},
-            {'Parameter': 'μ₀Ms (saturation)',  'Value': f'{_Ms_Am*_mu0*1e3:.1f}','Unit': 'mT',  'Notes': 'μ₀Ms'},
-            {'Parameter': 'Hc / μ₀Ms',        'Value': f'{Hc_val / max(_Ms_Am*_mu0*1e3,1e-6):.4f}','Unit':'—','Notes': 'Reduced coercivity'},
-        ]
+    # ── Final result ────────────────────────────────────────────────
+    _section('FINAL RESULT (geometry + temperature corrected)'),
+    {'Parameter': 'Hc',              'Value': f'{Hc_val:.2f}',           'Unit': 'mT',   'Notes': f'±{_sHc:.2f} mT (1σ RF variance)'},
+    {'Parameter': 'Mr / Ms',         'Value': f'{Mr_val:.4f}',           'Unit': '—',    'Notes': f'±{_sMr:.4f} (1σ)'},
+    {'Parameter': 'Hc sphere eq.',   'Value': f'{Hc_val / max(_geom_factor_hc,1e-6):.2f}', 'Unit': 'mT', 'Notes': 'Back-projected sphere value'},
+
+    {'Parameter': 'μ₀Ms(0)',         'Value': f'{_Ms_Am*_mu0*1e3:.1f}',                 'Unit': 'mT', 'Notes': 'Reference saturation'},
+    {'Parameter': 'μ₀Ms(T)',         'Value': f'{_Ms_Am*_ms_T*_mu0*1e3:.1f}',           'Unit': 'mT', 'Notes': 'Thermally corrected saturation'},
+
+    {'Parameter': 'Hc / μ₀Ms(T)',    'Value': f'{Hc_val / max(_Ms_Am*_ms_T*_mu0*1e3,1e-6):.4f}', 'Unit': '—', 'Notes': 'Reduced coercivity'},
+    ]
 
         _df_analysis = _pd_tab.DataFrame(_rows)
         # Style: section separators in a muted colour
